@@ -5,6 +5,7 @@ import { loadOrCreateServerIdentity, loadOrCreatePepper } from "./identity.js";
 import { loadOrCreateAdminToken } from "./admin.js";
 import { attachConnection } from "./connection.js";
 import { handleRegister, handleLogin, handleSaltLookup, pruneOldAttempts } from "./auth.js";
+import { issueSession, resumeSession, revokeSession, pruneExpiredSessions } from "./session.js";
 import {
   handleCarouselGetAll,
   handleCarouselUpsert,
@@ -41,14 +42,34 @@ export async function createHangoutsServer(options = {}) {
     }
   }
 
-  async function dispatch(type, payload) {
+  async function dispatch(type, payload, connectionContext) {
     switch (type) {
-      case "auth:register":
-        return handleRegister(db, pepper, payload);
-      case "auth:login":
-        return handleLogin(db, pepper, payload);
+      case "auth:register": {
+        const result = await handleRegister(db, pepper, payload);
+        const session = await issueSession(db, result.username);
+        connectionContext.setAuthenticatedUsername(result.username);
+        return { ...result, sessionToken: session.sessionToken };
+      }
+      case "auth:login": {
+        const result = await handleLogin(db, pepper, payload);
+        const session = await issueSession(db, result.username);
+        connectionContext.setAuthenticatedUsername(result.username);
+        return { ...result, sessionToken: session.sessionToken };
+      }
       case "auth:salt":
         return handleSaltLookup(db, pepper, payload);
+      case "auth:resume": {
+        const result = await resumeSession(db, payload && payload.sessionToken);
+        connectionContext.setAuthenticatedUsername(result.username);
+        return result;
+      }
+      case "auth:logout": {
+        if (payload && payload.sessionToken) {
+          await revokeSession(db, payload.sessionToken);
+        }
+        connectionContext.clearAuthenticatedUsername();
+        return { loggedOut: true };
+      }
       case "carousel:get-all":
         return handleCarouselGetAll(db);
       case "carousel:upsert": {
@@ -98,7 +119,10 @@ export async function createHangoutsServer(options = {}) {
     ws.on("close", () => connections.delete(connection));
   });
 
-  const pruneInterval = setInterval(() => pruneOldAttempts(db), 10 * 60 * 1000);
+  const pruneInterval = setInterval(() => {
+    pruneOldAttempts(db);
+    pruneExpiredSessions(db);
+  }, 10 * 60 * 1000);
   const sweepInterval = setInterval(() => handshakeBucket.sweep(60 * 60 * 1000), 30 * 60 * 1000);
   pruneInterval.unref?.();
   sweepInterval.unref?.();

@@ -65,6 +65,15 @@ export function openDatabase(path = dbPath) {
       body TEXT NOT NULL,
       published_at INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS sessions (
+      token_hash TEXT PRIMARY KEY,
+      username TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      last_seen_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_sessions_username ON sessions(username);
   `);
   return db;
 }

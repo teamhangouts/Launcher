@@ -102,6 +102,17 @@ export function attachConnection(ws, { serverIdentity, dispatch, log, remoteAddr
   let draining = false;
   let messageWindowStart = Date.now();
   let messageWindowCount = 0;
+  let authenticatedUsername = null;
+
+  const connectionContext = {
+    getAuthenticatedUsername: () => authenticatedUsername,
+    setAuthenticatedUsername: (username) => {
+      authenticatedUsername = username;
+    },
+    clearAuthenticatedUsername: () => {
+      authenticatedUsername = null;
+    }
+  };
 
   const handshakeTimer = setTimeout(() => {
     if (!sessionKey) {
@@ -208,7 +219,7 @@ export function attachConnection(ws, { serverIdentity, dispatch, log, remoteAddr
       return;
     }
     try {
-      const responsePayload = await dispatch(type, payload);
+      const responsePayload = await dispatch(type, payload, connectionContext);
       const envelope = await encryptEnvelope(sessionKey, sendSeqBox, {
         type: `${type}:response`,
         requestId,
@@ -242,5 +253,5 @@ export function attachConnection(ws, { serverIdentity, dispatch, log, remoteAddr
     }
   }
 
-  return { push };
+  return { push, getAuthenticatedUsername: connectionContext.getAuthenticatedUsername };
 }
