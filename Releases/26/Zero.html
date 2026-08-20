@@ -141,10 +141,31 @@ async function SecurityGenerateIdentityKeyPair() {
   };
 }
 
-async function SecurityStorePrivateKey(SecurityIdentifier, SecurityPrivateKey) {
+async function SecurityStorePrivateKey(SecurityIdentifier, SecurityPrivateKey, SecurityStagedExpiresAt) {
   const SecurityDb = await SecurityOpenDatabase();
   const SecurityStore = SecurityTransactionStore(SecurityDb, "Keys", "readwrite");
-  await SecurityRequestToPromise(SecurityStore.put({ username: SecurityIdentifier, privateKey: SecurityPrivateKey }));
+  await SecurityRequestToPromise(
+    SecurityStore.put({
+      username: SecurityIdentifier,
+      privateKey: SecurityPrivateKey,
+      staged: Boolean(SecurityStagedExpiresAt),
+      expiresAt: SecurityStagedExpiresAt || 0
+    })
+  );
+}
+
+async function SecurityPruneExpiredKeys() {
+  const SecurityDb = await SecurityOpenDatabase();
+  const SecurityStore = SecurityTransactionStore(SecurityDb, "Keys", "readwrite");
+  const SecurityAll = await SecurityRequestToPromise(SecurityStore.getAll());
+  const SecurityNow = Date.now();
+  for (const SecurityRecord of SecurityAll) {
+    if (SecurityRecord.staged && SecurityRecord.expiresAt && SecurityRecord.expiresAt <= SecurityNow) {
+      const SecurityDeleteDb = await SecurityOpenDatabase();
+      const SecurityDeleteStore = SecurityTransactionStore(SecurityDeleteDb, "Keys", "readwrite");
+      await SecurityRequestToPromise(SecurityDeleteStore.delete(SecurityRecord.username));
+    }
+  }
 }
 
 async function SecurityGetPrivateKey(SecurityIdentifier) {
@@ -211,6 +232,7 @@ async function SecurityEvaluateAbuse(SecurityIdentifier) {
 }
 
 const SecurityIdentityTtlMs = 30 * 60 * 1000;
+const SecurityStageCooldownMs = 5000;
 const SecurityProofOfWorkBits = 18;
 const SecurityCacheKey = "HangoutsPendingIdentity";
 const SecurityHoneypotIdentifiers = new Set(["admin", "root", "test", "administrator", "moderator", "support"]);
@@ -278,23 +300,72 @@ async function SecurityFlagHoneypot(SecurityIdentifier, SecurityDeviceId) {
   });
 }
 
+async function SecurityGetLastStagedAt() {
+  const SecurityDb = await SecurityOpenDatabase();
+  const SecurityStore = SecurityTransactionStore(SecurityDb, "Device", "readonly");
+  const SecurityRecord = await SecurityRequestToPromise(SecurityStore.get("lastStagedAt"));
+  return SecurityRecord ? SecurityRecord.value : 0;
+}
+
+async function SecuritySetLastStagedAt(SecurityTimestamp) {
+  const SecurityDb = await SecurityOpenDatabase();
+  const SecurityStore = SecurityTransactionStore(SecurityDb, "Device", "readwrite");
+  await SecurityRequestToPromise(SecurityStore.put({ key: "lastStagedAt", value: SecurityTimestamp }));
+}
+
+async function SecuritySignChallenge(SecurityPrivateKey, SecurityChallengeHex) {
+  const SecuritySignature = await crypto.subtle.sign(
+    { name: "ECDSA", hash: "SHA-256" },
+    SecurityPrivateKey,
+    SecurityHexToBuffer(SecurityChallengeHex)
+  );
+  return SecurityBufferToHex(SecuritySignature);
+}
+
 async function SecurityStageIdentity() {
+  const SecurityLastStagedAt = await SecurityGetLastStagedAt();
+  if (Date.now() - SecurityLastStagedAt < SecurityStageCooldownMs) {
+    throw new Error("SecurityStageThrottled");
+  }
+  await SecurityPruneExpiredKeys();
   const SecurityIdentity = await SecurityGenerateIdentityKeyPair();
   const SecurityDeviceId = await SecurityGetDeviceId();
   const SecurityProof = await SecuritySolveProofOfWork(SecurityIdentity.publicKeyHex);
   const SecurityIdentityId = SecurityRandomHex(16);
-  await SecurityStorePrivateKey(SecurityIdentityId, SecurityIdentity.privateKey);
+  const SecurityExpiresAt = Date.now() + SecurityIdentityTtlMs;
+  await SecurityStorePrivateKey(SecurityIdentityId, SecurityIdentity.privateKey, SecurityExpiresAt);
+  const SecurityChallengeHex = SecurityRandomHex(32);
+  const SecuritySignatureHex = await SecuritySignChallenge(SecurityIdentity.privateKey, SecurityChallengeHex);
   const SecurityCacheEntry = {
     identityId: SecurityIdentityId,
     publicKeyHex: SecurityIdentity.publicKeyHex,
     deviceId: SecurityDeviceId,
     proofOfWorkBits: SecurityProofOfWorkBits,
     proofOfWorkNonce: SecurityProof,
+    challengeHex: SecurityChallengeHex,
+    signatureHex: SecuritySignatureHex,
     createdAt: Date.now(),
-    expiresAt: Date.now() + SecurityIdentityTtlMs
+    expiresAt: SecurityExpiresAt
   };
   SecurityWriteCache(SecurityCacheEntry);
+  await SecuritySetLastStagedAt(Date.now());
   return SecurityCacheEntry;
+}
+
+async function SecurityVerifyCacheEntry(SecurityEntry) {
+  const SecurityPublicKey = await crypto.subtle.importKey(
+    "raw",
+    SecurityHexToBuffer(SecurityEntry.publicKeyHex),
+    { name: "ECDSA", namedCurve: "P-256" },
+    false,
+    ["verify"]
+  );
+  return crypto.subtle.verify(
+    { name: "ECDSA", hash: "SHA-256" },
+    SecurityPublicKey,
+    SecurityHexToBuffer(SecurityEntry.signatureHex),
+    SecurityHexToBuffer(SecurityEntry.challengeHex)
+  );
 }
 
 async function SecurityFinalizeRegistration(SecurityIdentityId, SecurityUsername, SecurityPassword) {
@@ -332,7 +403,7 @@ async function SecurityFinalizeRegistration(SecurityIdentityId, SecurityUsername
       createdAt: Date.now()
     })
   );
-  await SecurityStorePrivateKey(SecurityIdentifier, SecurityPrivateKey);
+  await SecurityStorePrivateKey(SecurityIdentifier, SecurityPrivateKey, 0);
   SecurityClearCache();
   return { username: SecurityIdentifier, deviceId: SecurityDeviceId };
 }
