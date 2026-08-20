@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Hangouts Launcher</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root{color-scheme:dark light}
+html,body{height:100%;margin:0}
+body{display:flex;align-items:center;justify-content:center;background:#0b0b0d;color:#e7e7ea;font:14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+#EnclaveStatus{opacity:.7;letter-spacing:.02em}
+#EnclaveStatus.EnclaveStatusError{color:#ff6b6b;opacity:1}
+</style>
+</head>
+<body>
+<div id="EnclaveStatus">Booting Hangouts...</div>
+<script>
+const EnclaveRepo = "teamhangouts/Hangouts";
+const EnclaveBranch = "main";
+const EnclaveCdnHost = "https://cdn.jsdelivr.net/gh";
+const EnclaveManifestPath = "Releases/Latest.txt";
+
+function EnclaveBaseUrl() {
+  return `${EnclaveCdnHost}/${EnclaveRepo}@${EnclaveBranch}/`;
+}
+
+function EnclaveManifestUrl() {
+  return EnclaveBaseUrl() + EnclaveManifestPath;
+}
+
+function EnclaveReleaseUrl(EnclaveReleasePath) {
+  return EnclaveBaseUrl() + EnclaveReleasePath;
+}
+
+async function EnclaveFetchText(EnclaveUrl) {
+  const EnclaveResponse = await fetch(EnclaveUrl, { cache: "no-store" });
+  if (!EnclaveResponse.ok) {
+    throw new Error(`EnclaveFetchFailed:${EnclaveResponse.status}:${EnclaveUrl}`);
+  }
+  return EnclaveResponse.text();
+}
+
+async function EnclaveFetchManifest() {
+  const EnclaveManifestRaw = await EnclaveFetchText(EnclaveManifestUrl());
+  const EnclaveReleasePath = EnclaveManifestRaw.trim().split("\n")[0].trim();
+  if (!EnclaveReleasePath) {
+    throw new Error("EnclaveManifestEmpty");
+  }
+  return EnclaveReleasePath;
+}
+
+async function EnclaveFetchRelease(EnclaveReleasePath) {
+  return EnclaveFetchText(EnclaveReleaseUrl(EnclaveReleasePath));
+}
+
+function EnclaveSetStatus(EnclaveMessage, EnclaveIsError) {
+  const EnclaveStatusNode = document.getElementById("EnclaveStatus");
+  EnclaveStatusNode.textContent = EnclaveMessage;
+  EnclaveStatusNode.classList.toggle("EnclaveStatusError", Boolean(EnclaveIsError));
+}
+
+function EnclaveBoot(EnclaveHtml) {
+  document.open();
+  document.write(EnclaveHtml);
+  document.close();
+}
+
+async function EnclaveRun() {
+  try {
+    EnclaveSetStatus("Locating latest release...");
+    const EnclaveReleasePath = await EnclaveFetchManifest();
+    EnclaveSetStatus("Downloading Hangouts...");
+    const EnclaveHtml = await EnclaveFetchRelease(EnclaveReleasePath);
+    EnclaveBoot(EnclaveHtml);
+  } catch (EnclaveError) {
+    EnclaveSetStatus("Could not reach Hangouts. Check your connection and try again.", true);
+  }
+}
+
+EnclaveRun();
+</script>
+</body>
+</html>
