@@ -453,16 +453,14 @@ async function SecurityAuthenticateAccount(SecurityUsername, SecurityPassword) {
   return { username: SecurityRecord.username, publicKeyHex: SecurityRecord.publicKeyHex, deviceId: SecurityRecord.deviceId };
 }
 
-const PipelinePort = 443;
-const PipelineScheme = "wss";
 const PipelineHandshakeTimeoutMs = 10000;
 const PipelineConnectTimeoutMs = 30000;
 const PipelineRequestTimeoutMs = 15000;
 const PipelineDatabaseName = "HangoutsPipeline";
 const PipelineDatabaseVersion = 1;
-const PipelineEndpointKeyB64 = "O1KhyibVkvFVl5O73cL5uOGYJIwgsoepMSx1j/Y1X1U=";
-const PipelineEndpointIvB64 = "hIlnZ4Ddl62rGdcq";
-const PipelineEndpointCipherB64 = "DtXO5qxMIb4Z5r0VrSTX6GmmoFHcewlulmIDmZ74NkxOqgue6jaA5w2A";
+const PipelineEndpointKeyB64 = "Pw7+ewMlr+hzZ/FzB1nwAk+hmj6SziqNjml45vUDwO8=";
+const PipelineEndpointIvB64 = "aoVSfP1AfdNoYFSL";
+const PipelineEndpointCipherB64 = "XWlG42cokpL814KAckAkhCPil9N32X2G9l77CgIOiGO//44DDg==";
 const PipelineExpectedIdentityB64 = "";
 const PipelineBackoffBaseMs = 2000;
 const PipelineBackoffMaxMs = 60000;
@@ -549,8 +547,7 @@ async function PipelineResolveEndpoint() {
     PipelineKey,
     PipelineBase64Decode(PipelineEndpointCipherB64)
   );
-  const PipelineHost = new TextDecoder().decode(PipelinePlainBuffer).replace(/^wss:\/\//, "").replace(/:\d+$/, "");
-  return `${PipelineScheme}://${PipelineHost}:${PipelinePort}`;
+  return new TextDecoder().decode(PipelinePlainBuffer);
 }
 
 function PipelineEmit(PipelineEventName, PipelinePayload) {
