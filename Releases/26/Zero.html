@@ -19,12 +19,6 @@ const SecurityDatabaseName = "HangoutsSecurity";
 const SecurityDatabaseVersion = 2;
 const SecurityCredentialIterations = 250000;
 
-// Accounts, lockout, and abuse tracking are owned by the Server now (see
-// Pipeline below) — it's the only party that can actually enforce any of
-// this, since a client can always clear its own IndexedDB. Local copies of
-// Identities/Attempts/Flags were removed rather than kept in sync as a
-// second, weaker source of truth. Keys/Device remain local because the
-// private key must never leave the client.
 function SecurityOpenDatabase() {
   return new Promise((resolve, reject) => {
     const SecurityRequest = indexedDB.open(SecurityDatabaseName, SecurityDatabaseVersion);
@@ -172,6 +166,8 @@ const SecurityIdentityTtlMs = 30 * 60 * 1000;
 const SecurityStageCooldownMs = 5000;
 const SecurityProofOfWorkBits = 18;
 const SecurityCacheKey = "HangoutsPendingIdentity";
+const SecuritySessionCacheKey = "HangoutsSessionProof";
+const SecuritySessionTtlMs = 5 * 60 * 1000;
 
 function SecurityCountLeadingZeroBits(SecurityBuffer) {
   const SecurityBytes = new Uint8Array(SecurityBuffer);
@@ -315,6 +311,40 @@ async function SecurityVerifyCacheEntry(SecurityEntry) {
   );
 }
 
+function SecuritySessionCanonicalPayload(SecurityEntry) {
+  return JSON.stringify({
+    username: SecurityEntry.username,
+    publicKeyHex: SecurityEntry.publicKeyHex,
+    deviceId: SecurityEntry.deviceId,
+    createdAt: SecurityEntry.createdAt,
+    expiresAt: SecurityEntry.expiresAt
+  });
+}
+
+function SecurityWriteSessionCache(SecurityEntry) {
+  localStorage.setItem(SecuritySessionCacheKey, JSON.stringify(SecurityEntry));
+}
+
+async function SecurityStageSession(SecurityUsername, SecurityDeviceId, SecurityPublicKeyHex) {
+  const SecurityIdentifier = SecurityNormalizeIdentifier(SecurityUsername);
+  const SecurityPrivateKey = await SecurityGetPrivateKey(SecurityIdentifier);
+  if (!SecurityPrivateKey) {
+    return null;
+  }
+  const SecurityBaseEntry = {
+    username: SecurityIdentifier,
+    publicKeyHex: SecurityPublicKeyHex,
+    deviceId: SecurityDeviceId,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + SecuritySessionTtlMs
+  };
+  const SecurityChallengeHex = await SecurityDigestPayload(SecuritySessionCanonicalPayload(SecurityBaseEntry));
+  const SecuritySignatureHex = await SecuritySignChallenge(SecurityPrivateKey, SecurityChallengeHex);
+  const SecuritySessionEntry = { ...SecurityBaseEntry, challengeHex: SecurityChallengeHex, signatureHex: SecuritySignatureHex };
+  SecurityWriteSessionCache(SecuritySessionEntry);
+  return SecuritySessionEntry;
+}
+
 async function SecurityEnsurePipelineConnected() {
   if (PipelineGetStatus() === "open") {
     return;
@@ -349,9 +379,6 @@ async function SecurityFinalizeRegistration(SecurityIdentityId, SecurityUsername
   const SecurityClientSaltHex = SecurityRandomHex(16);
   const SecurityCredentialHashHex = await SecurityDeriveCredentialHash(SecurityPassword, SecurityClientSaltHex);
 
-  // The Server independently re-verifies every field below (signature,
-  // proof-of-work, expiry, honeypot, uniqueness) — nothing here is trusted
-  // just because the client already checked it locally.
   const SecurityResponse = await PipelineSendRequest("auth:register", {
     username: SecurityIdentifier,
     clientSaltHex: SecurityClientSaltHex,
@@ -369,6 +396,7 @@ async function SecurityFinalizeRegistration(SecurityIdentityId, SecurityUsername
 
   await SecurityStorePrivateKey(SecurityResponse.username, SecurityPrivateKey, 0);
   await SecurityDeleteKeyRecord(SecurityIdentityId);
+  await SecurityStageSession(SecurityResponse.username, SecurityResponse.deviceId, SecurityCache.publicKeyHex);
   SecurityClearCache();
   EnclaveAuthorizeAndRun(SecurityResponse).catch(() => {});
   return SecurityResponse;
@@ -385,6 +413,7 @@ async function SecurityAuthenticateAccount(SecurityUsername, SecurityPassword) {
     username: SecurityIdentifier,
     credentialHashHex: SecurityCredentialHashHex
   });
+  await SecurityStageSession(SecurityLoginResponse.username, SecurityLoginResponse.deviceId, SecurityLoginResponse.publicKeyHex);
   EnclaveAuthorizeAndRun(SecurityLoginResponse).catch(() => {});
   return SecurityLoginResponse;
 }
@@ -960,10 +989,6 @@ function EnclaveIsAuthorized() {
   return Boolean(EnclaveAuthorizedSession);
 }
 
-// Security is the only caller allowed to unlock Enclave — a verified,
-// server-confirmed account (fresh registration or login) is the gate, not
-// just "a form was submitted." This is what keeps an anonymous visitor from
-// spinning up free CDN egress against the release manifest/asset repos.
 async function EnclaveAuthorizeAndRun(SecuritySession) {
   if (!SecuritySession || !SecuritySession.username) {
     throw new Error("EnclaveUnauthorized");

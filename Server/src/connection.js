@@ -93,13 +93,6 @@ async function decryptEnvelope(sessionKey, recvSeqBox, outer) {
   return JSON.parse(utf8Decode(plainBuffer));
 }
 
-// Messages are processed one at a time, strictly in arrival order, via this
-// queue+drain loop rather than a once()-then-on() split. A split listener
-// leaves a window between "handshake resolved" and "secure listener attached"
-// during which a fast peer's first secure message would be silently dropped
-// (no listener was attached yet when the 'message' event fired). Queuing
-// guarantees the handshake fully completes, including session key
-// derivation, before any later-arriving message is ever inspected.
 export function attachConnection(ws, { serverIdentity, dispatch, log, remoteAddress }) {
   const sendSeqBox = { value: 0 };
   const recvSeqBox = { value: -1 };

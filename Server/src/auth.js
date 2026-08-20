@@ -204,10 +204,6 @@ function isLocked(flag) {
   return Boolean(flag && flag.locked_until && flag.locked_until > Date.now());
 }
 
-// Honeypot hits are flagged under the `${identifier}:${deviceId}` composite
-// key, not the plain identifier, so a lock check must consult both keys —
-// otherwise the honeypot flag is written but never read back and the lockout
-// it's supposed to create never actually applies.
 async function getMostRestrictiveLock(db, identifier, deviceId) {
   const flags = [await getFlag(db, identifier)];
   if (deviceId) {
