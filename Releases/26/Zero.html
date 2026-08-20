@@ -210,10 +210,106 @@ async function SecurityEvaluateAbuse(SecurityIdentifier) {
   return { level: "Locked", failureCount: SecurityFailureCount, lockedUntil: SecurityLockedUntil };
 }
 
-async function SecurityRegisterAccount(SecurityUsername, SecurityPassword) {
+const SecurityIdentityTtlMs = 30 * 60 * 1000;
+const SecurityProofOfWorkBits = 18;
+const SecurityCacheKey = "HangoutsPendingIdentity";
+const SecurityHoneypotIdentifiers = new Set(["admin", "root", "test", "administrator", "moderator", "support"]);
+const SecurityDummySaltHex = "00000000000000000000000000000000";
+
+function SecurityCountLeadingZeroBits(SecurityBuffer) {
+  const SecurityBytes = new Uint8Array(SecurityBuffer);
+  let SecurityCount = 0;
+  for (const SecurityByte of SecurityBytes) {
+    if (SecurityByte === 0) {
+      SecurityCount += 8;
+      continue;
+    }
+    let SecurityRemaining = SecurityByte;
+    for (let SecurityBit = 7; SecurityBit >= 0; SecurityBit--) {
+      if ((SecurityRemaining & (1 << SecurityBit)) !== 0) {
+        break;
+      }
+      SecurityCount++;
+    }
+    break;
+  }
+  return SecurityCount;
+}
+
+async function SecuritySolveProofOfWork(SecurityPublicKeyHex) {
+  const SecurityEncoder = new TextEncoder();
+  let SecurityNonce = 0;
+  while (true) {
+    const SecurityCandidate = `${SecurityPublicKeyHex}:${SecurityNonce}`;
+    const SecurityDigest = await crypto.subtle.digest("SHA-256", SecurityEncoder.encode(SecurityCandidate));
+    if (SecurityCountLeadingZeroBits(SecurityDigest) >= SecurityProofOfWorkBits) {
+      return SecurityNonce;
+    }
+    SecurityNonce++;
+  }
+}
+
+function SecurityWriteCache(SecurityEntry) {
+  localStorage.setItem(SecurityCacheKey, JSON.stringify(SecurityEntry));
+}
+
+function SecurityReadCache() {
+  const SecurityRaw = localStorage.getItem(SecurityCacheKey);
+  if (!SecurityRaw) {
+    return null;
+  }
+  const SecurityEntry = JSON.parse(SecurityRaw);
+  if (!SecurityEntry.expiresAt || SecurityEntry.expiresAt <= Date.now()) {
+    localStorage.removeItem(SecurityCacheKey);
+    return null;
+  }
+  return SecurityEntry;
+}
+
+function SecurityClearCache() {
+  localStorage.removeItem(SecurityCacheKey);
+}
+
+async function SecurityFlagHoneypot(SecurityIdentifier, SecurityDeviceId) {
+  await SecuritySetFlag(`${SecurityIdentifier}:${SecurityDeviceId}`, {
+    level: "Locked",
+    lockedUntil: Date.now() + SecurityLockoutWindowMs * 96,
+    failureCount: SecurityLockoutThreshold
+  });
+}
+
+async function SecurityStageIdentity() {
+  const SecurityIdentity = await SecurityGenerateIdentityKeyPair();
+  const SecurityDeviceId = await SecurityGetDeviceId();
+  const SecurityProof = await SecuritySolveProofOfWork(SecurityIdentity.publicKeyHex);
+  const SecurityIdentityId = SecurityRandomHex(16);
+  await SecurityStorePrivateKey(SecurityIdentityId, SecurityIdentity.privateKey);
+  const SecurityCacheEntry = {
+    identityId: SecurityIdentityId,
+    publicKeyHex: SecurityIdentity.publicKeyHex,
+    deviceId: SecurityDeviceId,
+    proofOfWorkBits: SecurityProofOfWorkBits,
+    proofOfWorkNonce: SecurityProof,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + SecurityIdentityTtlMs
+  };
+  SecurityWriteCache(SecurityCacheEntry);
+  return SecurityCacheEntry;
+}
+
+async function SecurityFinalizeRegistration(SecurityIdentityId, SecurityUsername, SecurityPassword) {
   const SecurityIdentifier = SecurityNormalizeIdentifier(SecurityUsername);
+  if (SecurityHoneypotIdentifiers.has(SecurityIdentifier)) {
+    const SecurityDeviceId = await SecurityGetDeviceId();
+    await SecurityFlagHoneypot(SecurityIdentifier, SecurityDeviceId);
+    throw new Error("SecurityInvalidCredentials");
+  }
   if (await SecurityIsLocked(SecurityIdentifier)) {
     throw new Error("SecurityIdentifierLocked");
+  }
+  const SecurityPrivateKey = await SecurityGetPrivateKey(SecurityIdentityId);
+  if (!SecurityPrivateKey) {
+    throw new Error("SecurityIdentityExpired");
   }
   const SecurityDb = await SecurityOpenDatabase();
   const SecurityReadStore = SecurityTransactionStore(SecurityDb, "Identities", "readonly");
@@ -223,7 +319,6 @@ async function SecurityRegisterAccount(SecurityUsername, SecurityPassword) {
   }
   const SecuritySaltHex = SecurityRandomHex(16);
   const SecurityCredentialHash = await SecurityDeriveCredentialHash(SecurityPassword, SecuritySaltHex);
-  const SecurityIdentity = await SecurityGenerateIdentityKeyPair();
   const SecurityDeviceId = await SecurityGetDeviceId();
   const SecurityWriteDb = await SecurityOpenDatabase();
   const SecurityWriteStore = SecurityTransactionStore(SecurityWriteDb, "Identities", "readwrite");
@@ -232,13 +327,14 @@ async function SecurityRegisterAccount(SecurityUsername, SecurityPassword) {
       username: SecurityIdentifier,
       saltHex: SecuritySaltHex,
       credentialHash: SecurityCredentialHash,
-      publicKeyHex: SecurityIdentity.publicKeyHex,
       deviceId: SecurityDeviceId,
+      identityId: SecurityIdentityId,
       createdAt: Date.now()
     })
   );
-  await SecurityStorePrivateKey(SecurityIdentifier, SecurityIdentity.privateKey);
-  return { username: SecurityIdentifier, publicKeyHex: SecurityIdentity.publicKeyHex, deviceId: SecurityDeviceId };
+  await SecurityStorePrivateKey(SecurityIdentifier, SecurityPrivateKey);
+  SecurityClearCache();
+  return { username: SecurityIdentifier, deviceId: SecurityDeviceId };
 }
 
 async function SecurityAuthenticateAccount(SecurityUsername, SecurityPassword) {
@@ -250,6 +346,7 @@ async function SecurityAuthenticateAccount(SecurityUsername, SecurityPassword) {
   const SecurityStore = SecurityTransactionStore(SecurityDb, "Identities", "readonly");
   const SecurityRecord = await SecurityRequestToPromise(SecurityStore.get(SecurityIdentifier));
   if (!SecurityRecord) {
+    await SecurityDeriveCredentialHash(SecurityPassword, SecurityDummySaltHex);
     await SecurityRecordAttempt(SecurityIdentifier, false);
     await SecurityEvaluateAbuse(SecurityIdentifier);
     throw new Error("SecurityInvalidCredentials");
