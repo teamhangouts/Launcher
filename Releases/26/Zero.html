@@ -16,7 +16,7 @@ body{display:flex;align-items:center;justify-content:center;background:#0b0b0d;c
 <div id="EnclaveStatus">Booting Hangouts...</div>
 <script>
 const SecurityDatabaseName = "HangoutsSecurity";
-const SecurityDatabaseVersion = 2;
+const SecurityDatabaseVersion = 3;
 const SecurityCredentialIterations = 250000;
 
 function SecurityOpenDatabase() {
@@ -34,6 +34,9 @@ function SecurityOpenDatabase() {
       }
       if (!SecurityDb.objectStoreNames.contains("Device")) {
         SecurityDb.createObjectStore("Device", { keyPath: "key" });
+      }
+      if (!SecurityDb.objectStoreNames.contains("Session")) {
+        SecurityDb.createObjectStore("Session", { keyPath: "key" });
       }
     };
     SecurityRequest.onsuccess = () => resolve(SecurityRequest.result);
@@ -358,7 +361,95 @@ async function SecurityEnsurePipelineConnected() {
   }
 }
 
-async function SecurityFinalizeRegistration(SecurityIdentityId, SecurityUsername, SecurityPassword) {
+const SecurityCommonPasswords = new Set([
+  "password", "123456", "12345678", "123456789", "qwerty", "111111", "abc123",
+  "password1", "1234567", "letmein", "1234567890", "iloveyou", "admin", "welcome",
+  "monkey", "login", "princess", "qwerty123", "solo", "starwars"
+]);
+
+function SecurityValidatePassword(SecurityPassword) {
+  if (typeof SecurityPassword !== "string" || SecurityPassword.length < 8) {
+    throw new Error("SecurityPasswordTooShort");
+  }
+  if (SecurityCommonPasswords.has(SecurityPassword.toLowerCase())) {
+    throw new Error("SecurityPasswordTooCommon");
+  }
+}
+
+function SecurityValidateEmail(SecurityEmail) {
+  if (typeof SecurityEmail !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(SecurityEmail)) {
+    throw new Error("SecurityInvalidEmail");
+  }
+}
+
+function SecurityValidateUsername(SecurityUsername) {
+  if (typeof SecurityUsername !== "string" || !/^[a-z0-9_.-]{3,32}$/.test(SecurityUsername.trim().toLowerCase())) {
+    throw new Error("SecurityInvalidUsername");
+  }
+}
+
+async function SecurityPersistSessionToken(SecuritySessionToken) {
+  const SecurityDb = await SecurityOpenDatabase();
+  const SecurityStore = SecurityTransactionStore(SecurityDb, "Session", "readwrite");
+  await SecurityRequestToPromise(SecurityStore.put({ key: "sessionToken", value: SecuritySessionToken }));
+}
+
+async function SecurityGetPersistedSessionToken() {
+  const SecurityDb = await SecurityOpenDatabase();
+  const SecurityStore = SecurityTransactionStore(SecurityDb, "Session", "readonly");
+  const SecurityRecord = await SecurityRequestToPromise(SecurityStore.get("sessionToken"));
+  return SecurityRecord ? SecurityRecord.value : null;
+}
+
+async function SecurityClearPersistedSessionToken() {
+  const SecurityDb = await SecurityOpenDatabase();
+  const SecurityStore = SecurityTransactionStore(SecurityDb, "Session", "readwrite");
+  await SecurityRequestToPromise(SecurityStore.delete("sessionToken"));
+}
+
+async function SecurityRequireSessionToken() {
+  const SecuritySessionToken = await SecurityGetPersistedSessionToken();
+  if (!SecuritySessionToken) {
+    throw new Error("SecurityNotAuthenticated");
+  }
+  return SecuritySessionToken;
+}
+
+async function SecurityCompleteLogin(SecuritySession) {
+  await SecurityPersistSessionToken(SecuritySession.sessionToken);
+  await SecurityStageSession(SecuritySession.username, SecuritySession.deviceId, SecuritySession.publicKeyHex);
+  EnclaveAuthorizeAndRun(SecuritySession).catch(() => {});
+}
+
+async function SecurityStartSignup(SecurityUsername, SecurityEmail, SecurityPassword) {
+  SecurityValidateUsername(SecurityUsername);
+  SecurityValidateEmail(SecurityEmail);
+  SecurityValidatePassword(SecurityPassword);
+
+  const SecurityStagedEntry = await SecurityStageIdentity();
+  const SecurityClientSaltHex = SecurityRandomHex(16);
+  const SecurityCredentialHashHex = await SecurityDeriveCredentialHash(SecurityPassword, SecurityClientSaltHex);
+
+  await SecurityEnsurePipelineConnected();
+  const SecurityResponse = await PipelineSendRequest("auth:signup-start", {
+    username: SecurityNormalizeIdentifier(SecurityUsername),
+    email: SecurityEmail,
+    clientSaltHex: SecurityClientSaltHex,
+    credentialHashHex: SecurityCredentialHashHex,
+    identityId: SecurityStagedEntry.identityId,
+    publicKeyHex: SecurityStagedEntry.publicKeyHex,
+    deviceId: SecurityStagedEntry.deviceId,
+    proofOfWorkBits: SecurityStagedEntry.proofOfWorkBits,
+    proofOfWorkNonce: SecurityStagedEntry.proofOfWorkNonce,
+    createdAt: SecurityStagedEntry.createdAt,
+    expiresAt: SecurityStagedEntry.expiresAt,
+    challengeHex: SecurityStagedEntry.challengeHex,
+    signatureHex: SecurityStagedEntry.signatureHex
+  });
+  return { pendingVerificationId: SecurityResponse.pendingVerificationId, identityId: SecurityStagedEntry.identityId };
+}
+
+async function SecurityVerifySignupEmail(SecurityIdentityId, SecurityPendingVerificationId, SecurityCode) {
   const SecurityCache = SecurityReadCache();
   if (!SecurityCache || SecurityCache.identityId !== SecurityIdentityId) {
     throw new Error("SecurityIdentityExpired");
@@ -374,48 +465,212 @@ async function SecurityFinalizeRegistration(SecurityIdentityId, SecurityUsername
   }
 
   await SecurityEnsurePipelineConnected();
-
-  const SecurityIdentifier = SecurityNormalizeIdentifier(SecurityUsername);
-  const SecurityClientSaltHex = SecurityRandomHex(16);
-  const SecurityCredentialHashHex = await SecurityDeriveCredentialHash(SecurityPassword, SecurityClientSaltHex);
-
-  const SecurityResponse = await PipelineSendRequest("auth:register", {
-    username: SecurityIdentifier,
-    clientSaltHex: SecurityClientSaltHex,
-    credentialHashHex: SecurityCredentialHashHex,
-    identityId: SecurityCache.identityId,
-    publicKeyHex: SecurityCache.publicKeyHex,
-    deviceId: SecurityCache.deviceId,
-    proofOfWorkBits: SecurityCache.proofOfWorkBits,
-    proofOfWorkNonce: SecurityCache.proofOfWorkNonce,
-    createdAt: SecurityCache.createdAt,
-    expiresAt: SecurityCache.expiresAt,
-    challengeHex: SecurityCache.challengeHex,
-    signatureHex: SecurityCache.signatureHex
+  const SecurityResponse = await PipelineSendRequest("auth:signup-verify", {
+    pendingVerificationId: SecurityPendingVerificationId,
+    code: SecurityCode
   });
 
   await SecurityStorePrivateKey(SecurityResponse.username, SecurityPrivateKey, 0);
   await SecurityDeleteKeyRecord(SecurityIdentityId);
-  await SecurityStageSession(SecurityResponse.username, SecurityResponse.deviceId, SecurityCache.publicKeyHex);
   SecurityClearCache();
-  EnclaveAuthorizeAndRun(SecurityResponse).catch(() => {});
+  await SecurityCompleteLogin(SecurityResponse);
   return SecurityResponse;
 }
 
-async function SecurityAuthenticateAccount(SecurityUsername, SecurityPassword) {
+async function SecurityLoginWithPassword(SecurityEmail, SecurityPassword) {
+  SecurityValidateEmail(SecurityEmail);
   await SecurityEnsurePipelineConnected();
 
-  const SecurityIdentifier = SecurityNormalizeIdentifier(SecurityUsername);
-  const SecuritySaltResponse = await PipelineSendRequest("auth:salt", { username: SecurityIdentifier });
+  const SecuritySaltResponse = await PipelineSendRequest("auth:salt-by-email", { email: SecurityEmail });
   const SecurityCredentialHashHex = await SecurityDeriveCredentialHash(SecurityPassword, SecuritySaltResponse.saltHex);
-
-  const SecurityLoginResponse = await PipelineSendRequest("auth:login", {
-    username: SecurityIdentifier,
+  const SecurityResponse = await PipelineSendRequest("auth:login-password", {
+    email: SecurityEmail,
     credentialHashHex: SecurityCredentialHashHex
   });
-  await SecurityStageSession(SecurityLoginResponse.username, SecurityLoginResponse.deviceId, SecurityLoginResponse.publicKeyHex);
-  EnclaveAuthorizeAndRun(SecurityLoginResponse).catch(() => {});
-  return SecurityLoginResponse;
+
+  if (SecurityResponse.requires2fa) {
+    return { requires2fa: true, pendingVerificationId: SecurityResponse.pendingVerificationId };
+  }
+  await SecurityCompleteLogin(SecurityResponse);
+  return SecurityResponse;
+}
+
+async function SecurityVerifyTwoFactor(SecurityPendingVerificationId, SecurityCode) {
+  await SecurityEnsurePipelineConnected();
+  const SecurityResponse = await PipelineSendRequest("auth:login-verify-2fa", {
+    pendingVerificationId: SecurityPendingVerificationId,
+    code: SecurityCode
+  });
+  await SecurityCompleteLogin(SecurityResponse);
+  return SecurityResponse;
+}
+
+async function SecurityRequestLoginCode(SecurityEmail) {
+  SecurityValidateEmail(SecurityEmail);
+  await SecurityEnsurePipelineConnected();
+  return PipelineSendRequest("auth:login-code-request", { email: SecurityEmail });
+}
+
+async function SecurityVerifyLoginCode(SecurityPendingVerificationId, SecurityCode) {
+  await SecurityEnsurePipelineConnected();
+  const SecurityResponse = await PipelineSendRequest("auth:login-code-verify", {
+    pendingVerificationId: SecurityPendingVerificationId,
+    code: SecurityCode
+  });
+  await SecurityCompleteLogin(SecurityResponse);
+  return SecurityResponse;
+}
+
+async function SecurityEnablePass(SecurityEmail) {
+  SecurityValidateEmail(SecurityEmail);
+  const SecuritySessionToken = await SecurityRequireSessionToken();
+  const SecurityPassIdentity = await SecurityGenerateIdentityKeyPair();
+  const SecurityPassKeyId = `${SecurityNormalizeIdentifier(SecurityEmail)}:pass`;
+  await SecurityStorePrivateKey(SecurityPassKeyId, SecurityPassIdentity.privateKey, 0);
+  await SecurityEnsurePipelineConnected();
+  return PipelineSendRequest("auth:pass-enable", {
+    sessionToken: SecuritySessionToken,
+    publicKeyHex: SecurityPassIdentity.publicKeyHex
+  });
+}
+
+async function SecurityDisablePass() {
+  const SecuritySessionToken = await SecurityRequireSessionToken();
+  await SecurityEnsurePipelineConnected();
+  return PipelineSendRequest("auth:pass-disable", { sessionToken: SecuritySessionToken });
+}
+
+async function SecurityLoginWithPass(SecurityEmail) {
+  SecurityValidateEmail(SecurityEmail);
+  const SecurityPassKeyId = `${SecurityNormalizeIdentifier(SecurityEmail)}:pass`;
+  const SecurityPrivateKey = await SecurityGetPrivateKey(SecurityPassKeyId);
+  if (!SecurityPrivateKey) {
+    throw new Error("SecurityPassNotEnabledOnThisDevice");
+  }
+  await SecurityEnsurePipelineConnected();
+  const SecurityChallenge = await PipelineSendRequest("auth:pass-challenge", { email: SecurityEmail });
+  const SecuritySignatureHex = await SecuritySignChallenge(SecurityPrivateKey, SecurityChallenge.nonceHex);
+  const SecurityResponse = await PipelineSendRequest("auth:pass-verify", {
+    challengeId: SecurityChallenge.challengeId,
+    signatureHex: SecuritySignatureHex
+  });
+  await SecurityCompleteLogin(SecurityResponse);
+  return SecurityResponse;
+}
+
+async function SecurityRequestPasswordReset(SecurityEmail) {
+  SecurityValidateEmail(SecurityEmail);
+  await SecurityEnsurePipelineConnected();
+  return PipelineSendRequest("auth:forgot-password-request", { email: SecurityEmail });
+}
+
+async function SecurityResetPassword(SecurityPendingVerificationId, SecurityCode, SecurityNewPassword) {
+  SecurityValidatePassword(SecurityNewPassword);
+  const SecurityClientSaltHex = SecurityRandomHex(16);
+  const SecurityCredentialHashHex = await SecurityDeriveCredentialHash(SecurityNewPassword, SecurityClientSaltHex);
+  await SecurityEnsurePipelineConnected();
+  const SecurityResponse = await PipelineSendRequest("auth:forgot-password-verify", {
+    pendingVerificationId: SecurityPendingVerificationId,
+    code: SecurityCode,
+    clientSaltHex: SecurityClientSaltHex,
+    credentialHashHex: SecurityCredentialHashHex
+  });
+  await SecurityCompleteLogin(SecurityResponse);
+  return SecurityResponse;
+}
+
+async function SecurityEnableTwoFactor() {
+  const SecuritySessionToken = await SecurityRequireSessionToken();
+  await SecurityEnsurePipelineConnected();
+  return PipelineSendRequest("settings:enable-2fa", { sessionToken: SecuritySessionToken });
+}
+
+async function SecurityDisableTwoFactor() {
+  const SecuritySessionToken = await SecurityRequireSessionToken();
+  await SecurityEnsurePipelineConnected();
+  return PipelineSendRequest("settings:disable-2fa", { sessionToken: SecuritySessionToken });
+}
+
+async function SecurityChangeEmailRequest(SecurityNewEmail) {
+  SecurityValidateEmail(SecurityNewEmail);
+  const SecuritySessionToken = await SecurityRequireSessionToken();
+  await SecurityEnsurePipelineConnected();
+  return PipelineSendRequest("settings:change-email-request", {
+    sessionToken: SecuritySessionToken,
+    newEmail: SecurityNewEmail
+  });
+}
+
+async function SecurityChangeEmailVerify(SecurityPendingVerificationId, SecurityCode) {
+  const SecuritySessionToken = await SecurityRequireSessionToken();
+  await SecurityEnsurePipelineConnected();
+  return PipelineSendRequest("settings:change-email-verify", {
+    sessionToken: SecuritySessionToken,
+    pendingVerificationId: SecurityPendingVerificationId,
+    code: SecurityCode
+  });
+}
+
+async function SecurityChangePassword(SecurityCurrentPassword, SecurityNewPassword) {
+  SecurityValidatePassword(SecurityNewPassword);
+  const SecuritySessionToken = await SecurityRequireSessionToken();
+  await SecurityEnsurePipelineConnected();
+
+  const SecuritySaltResponse = await PipelineSendRequest("auth:salt-for-session", { sessionToken: SecuritySessionToken });
+  const SecurityCurrentCredentialHashHex = await SecurityDeriveCredentialHash(SecurityCurrentPassword, SecuritySaltResponse.saltHex);
+  const SecurityNewClientSaltHex = SecurityRandomHex(16);
+  const SecurityNewCredentialHashHex = await SecurityDeriveCredentialHash(SecurityNewPassword, SecurityNewClientSaltHex);
+
+  return PipelineSendRequest("settings:change-password", {
+    sessionToken: SecuritySessionToken,
+    currentCredentialHashHex: SecurityCurrentCredentialHashHex,
+    newClientSaltHex: SecurityNewClientSaltHex,
+    newCredentialHashHex: SecurityNewCredentialHashHex
+  });
+}
+
+async function SecurityChangeBio(SecurityBio) {
+  const SecuritySessionToken = await SecurityRequireSessionToken();
+  await SecurityEnsurePipelineConnected();
+  return PipelineSendRequest("settings:change-bio", { sessionToken: SecuritySessionToken, bio: SecurityBio });
+}
+
+async function SecurityChangePfp(SecurityImageBase64, SecurityMimeType) {
+  const SecuritySessionToken = await SecurityRequireSessionToken();
+  await SecurityEnsurePipelineConnected();
+  return PipelineSendRequest("settings:change-pfp", {
+    sessionToken: SecuritySessionToken,
+    imageBase64: SecurityImageBase64,
+    mimeType: SecurityMimeType
+  });
+}
+
+async function SecurityLogout() {
+  const SecuritySessionToken = await SecurityGetPersistedSessionToken();
+  if (SecuritySessionToken) {
+    try {
+      await SecurityEnsurePipelineConnected();
+      await PipelineSendRequest("auth:logout", { sessionToken: SecuritySessionToken });
+    } catch {}
+  }
+  await SecurityClearPersistedSessionToken();
+}
+
+async function SecurityBootResumeSession() {
+  const SecuritySessionToken = await SecurityGetPersistedSessionToken();
+  if (!SecuritySessionToken) {
+    return null;
+  }
+  try {
+    await SecurityEnsurePipelineConnected();
+    const SecurityResponse = await PipelineSendRequest("auth:resume", { sessionToken: SecuritySessionToken });
+    await SecurityStageSession(SecurityResponse.username, SecurityResponse.deviceId, SecurityResponse.publicKeyHex);
+    EnclaveAuthorizeAndRun({ ...SecurityResponse, sessionToken: SecuritySessionToken }).catch(() => {});
+    return SecurityResponse;
+  } catch {
+    await SecurityClearPersistedSessionToken();
+    return null;
+  }
 }
 
 const PipelineHandshakeTimeoutMs = 10000;
@@ -1064,7 +1319,11 @@ async function EnclaveRun() {
 
 EnclaveLoadFonts();
 ContentConnectAndSync();
-EnclaveSetStatus(`${EnclaveErrorUnauthorized}: Sign in to a Hangouts account to continue.`, true);
+SecurityBootResumeSession().then((SecurityResumedSession) => {
+  if (!SecurityResumedSession) {
+    EnclaveSetStatus(`${EnclaveErrorUnauthorized}: Sign in to a Hangouts account to continue.`, true);
+  }
+});
 </script>
 </body>
 </html>
