@@ -15,6 +15,256 @@ body{display:flex;align-items:center;justify-content:center;background:#0b0b0d;c
 <body>
 <div id="EnclaveStatus">Booting Hangouts...</div>
 <script>
+const SecurityDatabaseName = "HangoutsSecurity";
+const SecurityDatabaseVersion = 1;
+const SecurityCredentialIterations = 250000;
+const SecurityLockoutWindowMs = 15 * 60 * 1000;
+const SecurityLockoutThreshold = 5;
+const SecurityLockoutBaseMs = 30 * 1000;
+
+function SecurityOpenDatabase() {
+  return new Promise((resolve, reject) => {
+    const SecurityRequest = indexedDB.open(SecurityDatabaseName, SecurityDatabaseVersion);
+    SecurityRequest.onupgradeneeded = () => {
+      const SecurityDb = SecurityRequest.result;
+      if (!SecurityDb.objectStoreNames.contains("Identities")) {
+        SecurityDb.createObjectStore("Identities", { keyPath: "username" });
+      }
+      if (!SecurityDb.objectStoreNames.contains("Keys")) {
+        SecurityDb.createObjectStore("Keys", { keyPath: "username" });
+      }
+      if (!SecurityDb.objectStoreNames.contains("Attempts")) {
+        const SecurityAttemptsStore = SecurityDb.createObjectStore("Attempts", { keyPath: "id", autoIncrement: true });
+        SecurityAttemptsStore.createIndex("byIdentifier", "identifier");
+      }
+      if (!SecurityDb.objectStoreNames.contains("Flags")) {
+        SecurityDb.createObjectStore("Flags", { keyPath: "identifier" });
+      }
+      if (!SecurityDb.objectStoreNames.contains("Device")) {
+        SecurityDb.createObjectStore("Device", { keyPath: "key" });
+      }
+    };
+    SecurityRequest.onsuccess = () => resolve(SecurityRequest.result);
+    SecurityRequest.onerror = () => reject(SecurityRequest.error);
+  });
+}
+
+function SecurityTransactionStore(SecurityDb, SecurityStoreName, SecurityMode) {
+  return SecurityDb.transaction(SecurityStoreName, SecurityMode).objectStore(SecurityStoreName);
+}
+
+function SecurityRequestToPromise(SecurityRequest) {
+  return new Promise((resolve, reject) => {
+    SecurityRequest.onsuccess = () => resolve(SecurityRequest.result);
+    SecurityRequest.onerror = () => reject(SecurityRequest.error);
+  });
+}
+
+function SecurityRandomHex(SecurityByteLength) {
+  const SecurityBytes = crypto.getRandomValues(new Uint8Array(SecurityByteLength));
+  return Array.from(SecurityBytes).map((SecurityByte) => SecurityByte.toString(16).padStart(2, "0")).join("");
+}
+
+function SecurityBufferToHex(SecurityBuffer) {
+  return Array.from(new Uint8Array(SecurityBuffer)).map((SecurityByte) => SecurityByte.toString(16).padStart(2, "0")).join("");
+}
+
+function SecurityHexToBuffer(SecurityHex) {
+  const SecurityBytes = new Uint8Array(SecurityHex.length / 2);
+  for (let SecurityIndex = 0; SecurityIndex < SecurityBytes.length; SecurityIndex++) {
+    SecurityBytes[SecurityIndex] = parseInt(SecurityHex.substr(SecurityIndex * 2, 2), 16);
+  }
+  return SecurityBytes;
+}
+
+function SecurityConstantTimeEqual(SecurityA, SecurityB) {
+  if (SecurityA.length !== SecurityB.length) {
+    return false;
+  }
+  let SecurityDiff = 0;
+  for (let SecurityIndex = 0; SecurityIndex < SecurityA.length; SecurityIndex++) {
+    SecurityDiff |= SecurityA.charCodeAt(SecurityIndex) ^ SecurityB.charCodeAt(SecurityIndex);
+  }
+  return SecurityDiff === 0;
+}
+
+function SecurityNormalizeIdentifier(SecurityUsername) {
+  return SecurityUsername.trim().toLowerCase();
+}
+
+async function SecurityGetDeviceId() {
+  const SecurityDb = await SecurityOpenDatabase();
+  const SecurityReadStore = SecurityTransactionStore(SecurityDb, "Device", "readonly");
+  const SecurityExisting = await SecurityRequestToPromise(SecurityReadStore.get("deviceId"));
+  if (SecurityExisting) {
+    return SecurityExisting.value;
+  }
+  const SecurityNewId = SecurityRandomHex(32);
+  const SecurityWriteDb = await SecurityOpenDatabase();
+  const SecurityWriteStore = SecurityTransactionStore(SecurityWriteDb, "Device", "readwrite");
+  await SecurityRequestToPromise(SecurityWriteStore.put({ key: "deviceId", value: SecurityNewId }));
+  return SecurityNewId;
+}
+
+async function SecurityDeriveCredentialHash(SecurityPassword, SecuritySaltHex) {
+  const SecurityEncoder = new TextEncoder();
+  const SecurityKeyMaterial = await crypto.subtle.importKey(
+    "raw",
+    SecurityEncoder.encode(SecurityPassword),
+    "PBKDF2",
+    false,
+    ["deriveBits"]
+  );
+  const SecurityDerivedBits = await crypto.subtle.deriveBits(
+    {
+      name: "PBKDF2",
+      salt: SecurityHexToBuffer(SecuritySaltHex),
+      iterations: SecurityCredentialIterations,
+      hash: "SHA-256"
+    },
+    SecurityKeyMaterial,
+    256
+  );
+  return SecurityBufferToHex(SecurityDerivedBits);
+}
+
+async function SecurityGenerateIdentityKeyPair() {
+  const SecurityKeyPair = await crypto.subtle.generateKey(
+    { name: "ECDSA", namedCurve: "P-256" },
+    false,
+    ["sign", "verify"]
+  );
+  const SecurityPublicKeyRaw = await crypto.subtle.exportKey("raw", SecurityKeyPair.publicKey);
+  return {
+    privateKey: SecurityKeyPair.privateKey,
+    publicKeyHex: SecurityBufferToHex(SecurityPublicKeyRaw)
+  };
+}
+
+async function SecurityStorePrivateKey(SecurityIdentifier, SecurityPrivateKey) {
+  const SecurityDb = await SecurityOpenDatabase();
+  const SecurityStore = SecurityTransactionStore(SecurityDb, "Keys", "readwrite");
+  await SecurityRequestToPromise(SecurityStore.put({ username: SecurityIdentifier, privateKey: SecurityPrivateKey }));
+}
+
+async function SecurityGetPrivateKey(SecurityIdentifier) {
+  const SecurityDb = await SecurityOpenDatabase();
+  const SecurityStore = SecurityTransactionStore(SecurityDb, "Keys", "readonly");
+  const SecurityRecord = await SecurityRequestToPromise(SecurityStore.get(SecurityIdentifier));
+  return SecurityRecord ? SecurityRecord.privateKey : null;
+}
+
+async function SecurityRecordAttempt(SecurityIdentifier, SecuritySucceeded) {
+  const SecurityDb = await SecurityOpenDatabase();
+  const SecurityStore = SecurityTransactionStore(SecurityDb, "Attempts", "readwrite");
+  await SecurityRequestToPromise(
+    SecurityStore.add({
+      identifier: SecurityIdentifier,
+      succeeded: SecuritySucceeded,
+      timestamp: Date.now()
+    })
+  );
+}
+
+async function SecurityRecentFailureCount(SecurityIdentifier) {
+  const SecurityDb = await SecurityOpenDatabase();
+  const SecurityStore = SecurityTransactionStore(SecurityDb, "Attempts", "readonly");
+  const SecurityIndex = SecurityStore.index("byIdentifier");
+  const SecurityAll = await SecurityRequestToPromise(SecurityIndex.getAll(SecurityIdentifier));
+  const SecurityWindowStart = Date.now() - SecurityLockoutWindowMs;
+  return SecurityAll.filter(
+    (SecurityEntry) => !SecurityEntry.succeeded && SecurityEntry.timestamp >= SecurityWindowStart
+  ).length;
+}
+
+async function SecurityGetFlag(SecurityIdentifier) {
+  const SecurityDb = await SecurityOpenDatabase();
+  const SecurityStore = SecurityTransactionStore(SecurityDb, "Flags", "readonly");
+  return SecurityRequestToPromise(SecurityStore.get(SecurityIdentifier));
+}
+
+async function SecuritySetFlag(SecurityIdentifier, SecurityFlag) {
+  const SecurityDb = await SecurityOpenDatabase();
+  const SecurityStore = SecurityTransactionStore(SecurityDb, "Flags", "readwrite");
+  await SecurityRequestToPromise(SecurityStore.put({ identifier: SecurityIdentifier, ...SecurityFlag }));
+}
+
+async function SecurityIsLocked(SecurityIdentifier) {
+  const SecurityFlag = await SecurityGetFlag(SecurityIdentifier);
+  if (!SecurityFlag || !SecurityFlag.lockedUntil) {
+    return false;
+  }
+  return SecurityFlag.lockedUntil > Date.now();
+}
+
+async function SecurityEvaluateAbuse(SecurityIdentifier) {
+  const SecurityFailureCount = await SecurityRecentFailureCount(SecurityIdentifier);
+  if (SecurityFailureCount < SecurityLockoutThreshold) {
+    await SecuritySetFlag(SecurityIdentifier, { level: "Watched", lockedUntil: 0, failureCount: SecurityFailureCount });
+    return { level: "Watched", failureCount: SecurityFailureCount };
+  }
+  const SecurityExcess = SecurityFailureCount - SecurityLockoutThreshold;
+  const SecurityLockMs = SecurityLockoutBaseMs * Math.pow(2, SecurityExcess);
+  const SecurityLockedUntil = Date.now() + SecurityLockMs;
+  await SecuritySetFlag(SecurityIdentifier, { level: "Locked", lockedUntil: SecurityLockedUntil, failureCount: SecurityFailureCount });
+  return { level: "Locked", failureCount: SecurityFailureCount, lockedUntil: SecurityLockedUntil };
+}
+
+async function SecurityRegisterAccount(SecurityUsername, SecurityPassword) {
+  const SecurityIdentifier = SecurityNormalizeIdentifier(SecurityUsername);
+  if (await SecurityIsLocked(SecurityIdentifier)) {
+    throw new Error("SecurityIdentifierLocked");
+  }
+  const SecurityDb = await SecurityOpenDatabase();
+  const SecurityReadStore = SecurityTransactionStore(SecurityDb, "Identities", "readonly");
+  const SecurityExisting = await SecurityRequestToPromise(SecurityReadStore.get(SecurityIdentifier));
+  if (SecurityExisting) {
+    throw new Error("SecurityIdentifierTaken");
+  }
+  const SecuritySaltHex = SecurityRandomHex(16);
+  const SecurityCredentialHash = await SecurityDeriveCredentialHash(SecurityPassword, SecuritySaltHex);
+  const SecurityIdentity = await SecurityGenerateIdentityKeyPair();
+  const SecurityDeviceId = await SecurityGetDeviceId();
+  const SecurityWriteDb = await SecurityOpenDatabase();
+  const SecurityWriteStore = SecurityTransactionStore(SecurityWriteDb, "Identities", "readwrite");
+  await SecurityRequestToPromise(
+    SecurityWriteStore.add({
+      username: SecurityIdentifier,
+      saltHex: SecuritySaltHex,
+      credentialHash: SecurityCredentialHash,
+      publicKeyHex: SecurityIdentity.publicKeyHex,
+      deviceId: SecurityDeviceId,
+      createdAt: Date.now()
+    })
+  );
+  await SecurityStorePrivateKey(SecurityIdentifier, SecurityIdentity.privateKey);
+  return { username: SecurityIdentifier, publicKeyHex: SecurityIdentity.publicKeyHex, deviceId: SecurityDeviceId };
+}
+
+async function SecurityAuthenticateAccount(SecurityUsername, SecurityPassword) {
+  const SecurityIdentifier = SecurityNormalizeIdentifier(SecurityUsername);
+  if (await SecurityIsLocked(SecurityIdentifier)) {
+    throw new Error("SecurityIdentifierLocked");
+  }
+  const SecurityDb = await SecurityOpenDatabase();
+  const SecurityStore = SecurityTransactionStore(SecurityDb, "Identities", "readonly");
+  const SecurityRecord = await SecurityRequestToPromise(SecurityStore.get(SecurityIdentifier));
+  if (!SecurityRecord) {
+    await SecurityRecordAttempt(SecurityIdentifier, false);
+    await SecurityEvaluateAbuse(SecurityIdentifier);
+    throw new Error("SecurityInvalidCredentials");
+  }
+  const SecurityCandidateHash = await SecurityDeriveCredentialHash(SecurityPassword, SecurityRecord.saltHex);
+  const SecurityMatches = SecurityConstantTimeEqual(SecurityCandidateHash, SecurityRecord.credentialHash);
+  await SecurityRecordAttempt(SecurityIdentifier, SecurityMatches);
+  if (!SecurityMatches) {
+    await SecurityEvaluateAbuse(SecurityIdentifier);
+    throw new Error("SecurityInvalidCredentials");
+  }
+  await SecuritySetFlag(SecurityIdentifier, { level: "Clear", lockedUntil: 0, failureCount: 0 });
+  return { username: SecurityRecord.username, publicKeyHex: SecurityRecord.publicKeyHex, deviceId: SecurityRecord.deviceId };
+}
+
 const EnclaveRepo = "teamhangouts/Hangouts";
 const EnclaveBranch = "main";
 const EnclaveCdnHost = "https://cdn.jsdelivr.net/gh";
