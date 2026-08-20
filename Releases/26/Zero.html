@@ -322,6 +322,23 @@ async function SecuritySignChallenge(SecurityPrivateKey, SecurityChallengeHex) {
   return SecurityBufferToHex(SecuritySignature);
 }
 
+function SecurityCanonicalPayload(SecurityEntry) {
+  return JSON.stringify({
+    identityId: SecurityEntry.identityId,
+    publicKeyHex: SecurityEntry.publicKeyHex,
+    deviceId: SecurityEntry.deviceId,
+    proofOfWorkBits: SecurityEntry.proofOfWorkBits,
+    proofOfWorkNonce: SecurityEntry.proofOfWorkNonce,
+    createdAt: SecurityEntry.createdAt,
+    expiresAt: SecurityEntry.expiresAt
+  });
+}
+
+async function SecurityDigestPayload(SecurityPayloadString) {
+  const SecurityDigest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(SecurityPayloadString));
+  return SecurityBufferToHex(SecurityDigest);
+}
+
 async function SecurityStageIdentity() {
   const SecurityLastStagedAt = await SecurityGetLastStagedAt();
   if (Date.now() - SecurityLastStagedAt < SecurityStageCooldownMs) {
@@ -334,25 +351,28 @@ async function SecurityStageIdentity() {
   const SecurityIdentityId = SecurityRandomHex(16);
   const SecurityExpiresAt = Date.now() + SecurityIdentityTtlMs;
   await SecurityStorePrivateKey(SecurityIdentityId, SecurityIdentity.privateKey, SecurityExpiresAt);
-  const SecurityChallengeHex = SecurityRandomHex(32);
-  const SecuritySignatureHex = await SecuritySignChallenge(SecurityIdentity.privateKey, SecurityChallengeHex);
-  const SecurityCacheEntry = {
+  const SecurityBaseEntry = {
     identityId: SecurityIdentityId,
     publicKeyHex: SecurityIdentity.publicKeyHex,
     deviceId: SecurityDeviceId,
     proofOfWorkBits: SecurityProofOfWorkBits,
     proofOfWorkNonce: SecurityProof,
-    challengeHex: SecurityChallengeHex,
-    signatureHex: SecuritySignatureHex,
     createdAt: Date.now(),
     expiresAt: SecurityExpiresAt
   };
+  const SecurityChallengeHex = await SecurityDigestPayload(SecurityCanonicalPayload(SecurityBaseEntry));
+  const SecuritySignatureHex = await SecuritySignChallenge(SecurityIdentity.privateKey, SecurityChallengeHex);
+  const SecurityCacheEntry = { ...SecurityBaseEntry, challengeHex: SecurityChallengeHex, signatureHex: SecuritySignatureHex };
   SecurityWriteCache(SecurityCacheEntry);
   await SecuritySetLastStagedAt(Date.now());
   return SecurityCacheEntry;
 }
 
 async function SecurityVerifyCacheEntry(SecurityEntry) {
+  const SecurityExpectedChallengeHex = await SecurityDigestPayload(SecurityCanonicalPayload(SecurityEntry));
+  if (SecurityExpectedChallengeHex !== SecurityEntry.challengeHex) {
+    return false;
+  }
   const SecurityPublicKey = await crypto.subtle.importKey(
     "raw",
     SecurityHexToBuffer(SecurityEntry.publicKeyHex),
@@ -443,8 +463,13 @@ const PipelineDatabaseVersion = 1;
 const PipelineEndpointKeyB64 = "O1KhyibVkvFVl5O73cL5uOGYJIwgsoepMSx1j/Y1X1U=";
 const PipelineEndpointIvB64 = "hIlnZ4Ddl62rGdcq";
 const PipelineEndpointCipherB64 = "DtXO5qxMIb4Z5r0VrSTX6GmmoFHcewlulmIDmZ74NkxOqgue6jaA5w2A";
+const PipelineExpectedIdentityB64 = "";
+const PipelineBackoffBaseMs = 2000;
+const PipelineBackoffMaxMs = 60000;
 
 let PipelineSocket = null;
+let PipelineReconnectFailures = 0;
+let PipelineLastFailureAt = 0;
 let PipelineStatusValue = "disconnected";
 let PipelineSessionKey = null;
 let PipelineSendSeq = 0;
@@ -693,9 +718,15 @@ async function PipelinePerformHandshake(PipelineActiveSocket) {
   const PipelineNonce = new Uint8Array(PipelineBase64Decode(PipelineResponse.nonce));
   const PipelineSignedBlob = PipelineConcatBytes(PipelineClientEphemeralRaw, PipelineServerEphemeralRaw, PipelineNonce);
 
-  const PipelinePinned = await PipelineGetPinnedIdentity();
-  if (PipelinePinned && PipelinePinned !== PipelineResponse.serverLongTermPublicKey) {
-    throw new Error("PipelineServerIdentityMismatch");
+  if (PipelineExpectedIdentityB64) {
+    if (PipelineResponse.serverLongTermPublicKey !== PipelineExpectedIdentityB64) {
+      throw new Error("PipelineServerIdentityMismatch");
+    }
+  } else {
+    const PipelinePinned = await PipelineGetPinnedIdentity();
+    if (PipelinePinned && PipelinePinned !== PipelineResponse.serverLongTermPublicKey) {
+      throw new Error("PipelineServerIdentityMismatch");
+    }
   }
 
   const PipelineServerIdentityKey = await crypto.subtle.importKey(
@@ -715,8 +746,11 @@ async function PipelinePerformHandshake(PipelineActiveSocket) {
     throw new Error("PipelineHandshakeSignatureInvalid");
   }
 
-  if (!PipelinePinned) {
-    await PipelineSetPinnedIdentity(PipelineResponse.serverLongTermPublicKey);
+  if (!PipelineExpectedIdentityB64) {
+    const PipelinePinned = await PipelineGetPinnedIdentity();
+    if (!PipelinePinned) {
+      await PipelineSetPinnedIdentity(PipelineResponse.serverLongTermPublicKey);
+    }
   }
 
   const PipelineServerEphemeralPublicKey = await crypto.subtle.importKey(
@@ -744,9 +778,30 @@ async function PipelinePerformHandshake(PipelineActiveSocket) {
   PipelineSendQueue = Promise.resolve();
 }
 
+function PipelineBackoffRemainingMs() {
+  if (PipelineReconnectFailures === 0) {
+    return 0;
+  }
+  const PipelineBackoff = Math.min(PipelineBackoffBaseMs * Math.pow(2, PipelineReconnectFailures - 1), PipelineBackoffMaxMs);
+  return Math.max(0, PipelineBackoff - (Date.now() - PipelineLastFailureAt));
+}
+
+function PipelineRecordFailure() {
+  PipelineReconnectFailures++;
+  PipelineLastFailureAt = Date.now();
+}
+
+function PipelineRecordSuccess() {
+  PipelineReconnectFailures = 0;
+  PipelineLastFailureAt = 0;
+}
+
 function PipelineConnect() {
   if (PipelineStatusValue === "connecting" || PipelineStatusValue === "open") {
     return Promise.resolve();
+  }
+  if (PipelineBackoffRemainingMs() > 0) {
+    return Promise.reject(new Error("PipelineBackoffActive"));
   }
   PipelineSetStatus("connecting");
   return PipelineResolveEndpoint().then((PipelineUrl) => new Promise((resolve, reject) => {
@@ -760,6 +815,7 @@ function PipelineConnect() {
       try {
         PipelineActiveSocket.close();
       } catch {}
+      PipelineRecordFailure();
       PipelineSetStatus("disconnected");
       reject(new Error("PipelineConnectTimeout"));
     }, PipelineConnectTimeoutMs);
@@ -779,6 +835,7 @@ function PipelineConnect() {
         try {
           PipelineActiveSocket.close();
         } catch {}
+        PipelineRecordFailure();
         PipelineSetStatus("disconnected");
         reject(PipelineError);
         return;
@@ -789,6 +846,7 @@ function PipelineConnect() {
       PipelineSettled = true;
       clearTimeout(PipelineTimeoutTimer);
       PipelineSocket = PipelineActiveSocket;
+      PipelineRecordSuccess();
       PipelineSetStatus("open");
       resolve();
     };
@@ -798,6 +856,7 @@ function PipelineConnect() {
       if (!PipelineSettled) {
         PipelineSettled = true;
         clearTimeout(PipelineTimeoutTimer);
+        PipelineRecordFailure();
         PipelineSetStatus("disconnected");
         reject(new Error(PipelineBanned ? "PipelineBanned" : "PipelineConnectError"));
         return;
@@ -807,6 +866,7 @@ function PipelineConnect() {
         PipelineSendSeq = 0;
         PipelineRecvSeq = -1;
         PipelineSendQueue = Promise.resolve();
+        PipelineRecordFailure();
         PipelineSetStatus("disconnected");
         PipelineEmit("disconnected", { banned: PipelineBanned });
         for (const [, PipelinePendingEntry] of PipelinePending) {
