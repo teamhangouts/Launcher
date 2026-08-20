@@ -883,6 +883,7 @@ const EnclaveRepo = "teamhangouts/Hangouts";
 const EnclaveBranch = "main";
 const EnclaveCdnHost = "https://cdn.jsdelivr.net/gh";
 const EnclaveManifestPath = "Releases/Latest.txt";
+const EnclavePublicKeyB64 = "BG3meGouQKGYoMpgnSxK+8/iG7vVgLchFzHZr3nScImbMYrb0wM3uZqgo4HzBXi5v3oJvs1PciNTA8eaJQK90I4=";
 
 function EnclaveBaseUrl() {
   return `${EnclaveCdnHost}/${EnclaveRepo}@${EnclaveBranch}/`;
@@ -896,6 +897,10 @@ function EnclaveReleaseUrl(EnclaveReleasePath) {
   return EnclaveBaseUrl() + EnclaveReleasePath;
 }
 
+function EnclaveBase64Decode(EnclaveString) {
+  return Uint8Array.from(atob(EnclaveString), (EnclaveChar) => EnclaveChar.charCodeAt(0)).buffer;
+}
+
 async function EnclaveFetchText(EnclaveUrl) {
   const EnclaveResponse = await fetch(EnclaveUrl, { cache: "no-store" });
   if (!EnclaveResponse.ok) {
@@ -906,15 +911,33 @@ async function EnclaveFetchText(EnclaveUrl) {
 
 async function EnclaveFetchManifest() {
   const EnclaveManifestRaw = await EnclaveFetchText(EnclaveManifestUrl());
-  const EnclaveReleasePath = EnclaveManifestRaw.trim().split("\n")[0].trim();
-  if (!EnclaveReleasePath) {
-    throw new Error("EnclaveManifestEmpty");
+  const EnclaveManifestLines = EnclaveManifestRaw.trim().split("\n").map((EnclaveLine) => EnclaveLine.trim());
+  const EnclaveReleasePath = EnclaveManifestLines[0];
+  const EnclaveSignatureB64 = EnclaveManifestLines[1];
+  if (!EnclaveReleasePath || !EnclaveSignatureB64) {
+    throw new Error("EnclaveManifestIncomplete");
   }
-  return EnclaveReleasePath;
+  return { releasePath: EnclaveReleasePath, signatureB64: EnclaveSignatureB64 };
 }
 
 async function EnclaveFetchRelease(EnclaveReleasePath) {
   return EnclaveFetchText(EnclaveReleaseUrl(EnclaveReleasePath));
+}
+
+async function EnclaveVerifyRelease(EnclaveHtml, EnclaveSignatureB64) {
+  const EnclavePublicKey = await crypto.subtle.importKey(
+    "raw",
+    EnclaveBase64Decode(EnclavePublicKeyB64),
+    { name: "ECDSA", namedCurve: "P-256" },
+    false,
+    ["verify"]
+  );
+  return crypto.subtle.verify(
+    { name: "ECDSA", hash: "SHA-256" },
+    EnclavePublicKey,
+    EnclaveBase64Decode(EnclaveSignatureB64),
+    new TextEncoder().encode(EnclaveHtml)
+  );
 }
 
 function EnclaveSetStatus(EnclaveMessage, EnclaveIsError) {
@@ -952,9 +975,14 @@ function EnclaveBoot(EnclaveHtml) {
 async function EnclaveRun() {
   try {
     EnclaveSetStatus("Locating latest release...");
-    const EnclaveReleasePath = await EnclaveFetchManifest();
+    const EnclaveManifest = await EnclaveFetchManifest();
     EnclaveSetStatus("Downloading Hangouts...");
-    const EnclaveHtml = await EnclaveFetchRelease(EnclaveReleasePath);
+    const EnclaveHtml = await EnclaveFetchRelease(EnclaveManifest.releasePath);
+    EnclaveSetStatus("Verifying release...");
+    const EnclaveVerified = await EnclaveVerifyRelease(EnclaveHtml, EnclaveManifest.signatureB64);
+    if (!EnclaveVerified) {
+      throw new Error("EnclaveSignatureInvalid");
+    }
     EnclaveBoot(EnclaveHtml);
   } catch (EnclaveError) {
     EnclaveSetStatus("Could not reach Hangouts. Check your connection and try again.", true);
