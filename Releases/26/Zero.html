@@ -7,7 +7,7 @@
 <style>
 :root{color-scheme:dark light}
 html,body{height:100%;margin:0}
-body{display:flex;align-items:center;justify-content:center;background:#0b0b0d;color:#e7e7ea;font:14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+body{display:flex;align-items:center;justify-content:center;background:#0b0b0d;color:#e7e7ea;font:14px/1.4 "Geist",sans-serif}
 #EnclaveStatus{opacity:.7;letter-spacing:.02em}
 #EnclaveStatus.EnclaveStatusError{color:#ff6b6b;opacity:1}
 </style>
@@ -877,13 +877,33 @@ function PipelineConnect() {
 }
 
 const EnclaveRepo = "teamhangouts/Hangouts";
+const EnclaveAssetsRepo = "teamhangouts/Assets";
 const EnclaveBranch = "main";
 const EnclaveCdnHost = "https://cdn.jsdelivr.net/gh";
 const EnclaveManifestPath = "Releases/Latest.txt";
 const EnclavePublicKeyB64 = "BG3meGouQKGYoMpgnSxK+8/iG7vVgLchFzHZr3nScImbMYrb0wM3uZqgo4HzBXi5v3oJvs1PciNTA8eaJQK90I4=";
+const EnclaveFontFamily = "Geist";
+const EnclaveFontPath = "Fonts/Geist/Variable.woff2";
+const EnclaveFontWeightRange = "100 900";
 
 function EnclaveBaseUrl() {
   return `${EnclaveCdnHost}/${EnclaveRepo}@${EnclaveBranch}/`;
+}
+
+function EnclaveAssetsBaseUrl() {
+  return `${EnclaveCdnHost}/${EnclaveAssetsRepo}@${EnclaveBranch}/`;
+}
+
+function EnclaveFontUrl() {
+  return EnclaveAssetsBaseUrl() + EnclaveFontPath;
+}
+
+async function EnclaveLoadFonts() {
+  try {
+    const EnclaveFont = new FontFace(EnclaveFontFamily, `url(${EnclaveFontUrl()})`, { weight: EnclaveFontWeightRange });
+    const EnclaveLoadedFont = await EnclaveFont.load();
+    document.fonts.add(EnclaveLoadedFont);
+  } catch {}
 }
 
 function EnclaveManifestUrl() {
@@ -1010,6 +1030,7 @@ async function EnclaveRun() {
   }
 }
 
+EnclaveLoadFonts();
 EnclaveRun();
 </script>
 </body>
