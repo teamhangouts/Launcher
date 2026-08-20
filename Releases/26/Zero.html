@@ -901,27 +901,60 @@ function EnclaveBase64Decode(EnclaveString) {
   return Uint8Array.from(atob(EnclaveString), (EnclaveChar) => EnclaveChar.charCodeAt(0)).buffer;
 }
 
-async function EnclaveFetchText(EnclaveUrl) {
-  const EnclaveResponse = await fetch(EnclaveUrl, { cache: "no-store" });
+const EnclaveErrorNoNetwork = "E1";
+const EnclaveErrorManifestUnreachable = "E2";
+const EnclaveErrorManifestMalformed = "E3";
+const EnclaveErrorReleaseUnreachable = "E4";
+const EnclaveErrorReleaseUnsigned = "E5";
+
+function EnclaveTaggedError(EnclaveCode, EnclaveMessage) {
+  const EnclaveError = new Error(EnclaveMessage);
+  EnclaveError.code = EnclaveCode;
+  return EnclaveError;
+}
+
+function EnclaveIsOffline() {
+  return typeof navigator !== "undefined" && navigator.onLine === false;
+}
+
+async function EnclaveFetchText(EnclaveUrl, EnclaveUnreachableCode, EnclaveUnreachableMessage) {
+  let EnclaveResponse;
+  try {
+    EnclaveResponse = await fetch(EnclaveUrl, { cache: "no-store" });
+  } catch {
+    throw EnclaveIsOffline()
+      ? EnclaveTaggedError(EnclaveErrorNoNetwork, "No network connection detected.")
+      : EnclaveTaggedError(EnclaveUnreachableCode, EnclaveUnreachableMessage);
+  }
   if (!EnclaveResponse.ok) {
-    throw new Error(`EnclaveFetchFailed:${EnclaveResponse.status}:${EnclaveUrl}`);
+    throw EnclaveIsOffline()
+      ? EnclaveTaggedError(EnclaveErrorNoNetwork, "No network connection detected.")
+      : EnclaveTaggedError(EnclaveUnreachableCode, EnclaveUnreachableMessage);
   }
   return EnclaveResponse.text();
 }
 
 async function EnclaveFetchManifest() {
-  const EnclaveManifestRaw = await EnclaveFetchText(EnclaveManifestUrl());
+  const EnclaveManifestRaw = await EnclaveFetchText(
+    EnclaveManifestUrl(),
+    EnclaveErrorManifestUnreachable,
+    "Could not reach the Hangouts release manifest."
+  );
   const EnclaveManifestLines = EnclaveManifestRaw.trim().split("\n").map((EnclaveLine) => EnclaveLine.trim());
   const EnclaveReleasePath = EnclaveManifestLines[0];
   const EnclaveSignatureB64 = EnclaveManifestLines[1];
   if (!EnclaveReleasePath || !EnclaveSignatureB64) {
-    throw new Error("EnclaveManifestIncomplete");
+    throw EnclaveTaggedError(EnclaveErrorManifestMalformed, "The Hangouts release manifest is malformed.");
   }
   return { releasePath: EnclaveReleasePath, signatureB64: EnclaveSignatureB64 };
 }
 
 async function EnclaveFetchRelease(EnclaveReleasePath) {
-  return EnclaveFetchText(EnclaveReleaseUrl(EnclaveReleasePath));
+  return EnclaveFetchText(
+    EnclaveReleaseUrl(EnclaveReleasePath),
+    EnclaveErrorReleaseUnreachable,
+    "Could not download the Hangouts release."
+  );
 }
 
 async function EnclaveVerifyRelease(EnclaveHtml, EnclaveSignatureB64) {
@@ -981,11 +1014,13 @@ async function EnclaveRun() {
     EnclaveSetStatus("Verifying release...");
     const EnclaveVerified = await EnclaveVerifyRelease(EnclaveHtml, EnclaveManifest.signatureB64);
     if (!EnclaveVerified) {
-      throw new Error("EnclaveSignatureInvalid");
+      throw EnclaveTaggedError(EnclaveErrorReleaseUnsigned, "The Hangouts release signature could not be verified.");
     }
     EnclaveBoot(EnclaveHtml);
   } catch (EnclaveError) {
-    EnclaveSetStatus("Could not reach Hangouts. Check your connection and try again.", true);
+    const EnclaveCode = EnclaveError && EnclaveError.code ? EnclaveError.code : EnclaveErrorManifestUnreachable;
+    const EnclaveMessage = EnclaveError && EnclaveError.message ? EnclaveError.message : "Could not reach Hangouts.";
+    EnclaveSetStatus(`${EnclaveCode}: ${EnclaveMessage}`, true);
   }
 }
 
