@@ -2,10 +2,12 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createHangoutsServer } from "../src/server.js";
 import { randomHex } from "../src/codec.js";
+import { onSend } from "../src/mailer.js";
 import { TestPipelineClient, buildRegistrationEntry, deriveCredentialHash } from "./testClient.js";
 
 let server;
 let url;
+let lastCode;
 
 before(async () => {
   server = await createHangoutsServer({
@@ -15,6 +17,9 @@ before(async () => {
   });
   const address = await server.listen(0);
   url = `ws://127.0.0.1:${address.port}`;
+  onSend(({ code }) => {
+    lastCode = code;
+  });
 });
 
 after(() => {
@@ -25,14 +30,19 @@ function uniqueUsername() {
   return `user_${randomHex(8)}`;
 }
 
+function uniqueEmail() {
+  return `${randomHex(8)}@example.com`;
+}
+
 async function registerAndGetSession(username, password) {
   const client = new TestPipelineClient(url);
   await client.connect();
   const entry = await buildRegistrationEntry();
   const clientSaltHex = randomHex(16);
   const credentialHashHex = await deriveCredentialHash(password, clientSaltHex);
-  const result = await client.sendRequest("auth:register", {
+  const { pendingVerificationId } = await client.sendRequest("auth:signup-start", {
     username,
+    email: uniqueEmail(),
     clientSaltHex,
     credentialHashHex,
     identityId: entry.identityId,
@@ -45,6 +55,7 @@ async function registerAndGetSession(username, password) {
     challengeHex: entry.challengeHex,
     signatureHex: entry.signatureHex
   });
+  const result = await client.sendRequest("auth:signup-verify", { pendingVerificationId, code: lastCode });
   return { client, result };
 }
 

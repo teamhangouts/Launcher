@@ -4,8 +4,34 @@ import { openDatabase } from "./db.js";
 import { loadOrCreateServerIdentity, loadOrCreatePepper } from "./identity.js";
 import { loadOrCreateAdminToken } from "./admin.js";
 import { attachConnection } from "./connection.js";
-import { handleRegister, handleLogin, handleSaltLookup, pruneOldAttempts } from "./auth.js";
-import { issueSession, resumeSession, revokeSession, pruneExpiredSessions } from "./session.js";
+import {
+  handleSignupStart,
+  handleSignupVerify,
+  handleSaltByEmail,
+  handleLoginPassword,
+  handleLoginVerify2fa,
+  handleLoginCodeRequest,
+  handleLoginCodeVerify,
+  handlePassEnable,
+  handlePassDisable,
+  handlePassChallenge,
+  handlePassVerify,
+  handleForgotPasswordRequest,
+  handleForgotPasswordVerify,
+  handleSaltForSession,
+  pruneOldAttempts
+} from "./auth.js";
+import {
+  handleEnable2fa,
+  handleDisable2fa,
+  handleChangeEmailRequest,
+  handleChangeEmailVerify,
+  handleChangePassword,
+  handleChangeBio,
+  handleChangePfp
+} from "./profile.js";
+import { issueSession, resumeSession, revokeSession, requireSession, pruneExpiredSessions } from "./session.js";
+import { pruneExpiredVerifications } from "./verification.js";
 import {
   handleCarouselGetAll,
   handleCarouselUpsert,
@@ -31,6 +57,17 @@ export async function createHangoutsServer(options = {}) {
   const connections = new Set();
 
   const httpServer = createServer((req, res) => {
+    const match = /^\/pfp\/([a-z0-9_.-]{3,32})$/.exec(req.url || "");
+    if (req.method === "GET" && match) {
+      const row = db.prepare("SELECT pfp, pfp_mime FROM identities WHERE username = ?").get(match[1]);
+      if (!row || !row.pfp) {
+        res.writeHead(404).end();
+        return;
+      }
+      res.writeHead(200, { "Content-Type": row.pfp_mime, "Cache-Control": "no-store" });
+      res.end(row.pfp);
+      return;
+    }
     res.writeHead(404).end();
   });
 
@@ -42,22 +79,68 @@ export async function createHangoutsServer(options = {}) {
     }
   }
 
+  async function withSession(payload, handler) {
+    const { record, tokenHash } = await requireSession(db, payload && payload.sessionToken);
+    return handler(record, tokenHash);
+  }
+
   async function dispatch(type, payload, connectionContext) {
     switch (type) {
-      case "auth:register": {
-        const result = await handleRegister(db, pepper, payload);
+      case "auth:signup-start":
+        return handleSignupStart(db, pepper, payload);
+      case "auth:signup-verify": {
+        const result = await handleSignupVerify(db, pepper, payload);
         const session = await issueSession(db, result.username);
         connectionContext.setAuthenticatedUsername(result.username);
         return { ...result, sessionToken: session.sessionToken };
       }
-      case "auth:login": {
-        const result = await handleLogin(db, pepper, payload);
+      case "auth:salt-by-email":
+        return handleSaltByEmail(db, pepper, payload);
+      case "auth:login-password": {
+        const result = await handleLoginPassword(db, pepper, payload);
+        if (result.requires2fa) {
+          return result;
+        }
         const session = await issueSession(db, result.username);
         connectionContext.setAuthenticatedUsername(result.username);
         return { ...result, sessionToken: session.sessionToken };
       }
-      case "auth:salt":
-        return handleSaltLookup(db, pepper, payload);
+      case "auth:login-verify-2fa": {
+        const result = await handleLoginVerify2fa(db, pepper, payload);
+        const session = await issueSession(db, result.username);
+        connectionContext.setAuthenticatedUsername(result.username);
+        return { ...result, sessionToken: session.sessionToken };
+      }
+      case "auth:login-code-request":
+        return handleLoginCodeRequest(db, pepper, payload);
+      case "auth:login-code-verify": {
+        const result = await handleLoginCodeVerify(db, pepper, payload);
+        const session = await issueSession(db, result.username);
+        connectionContext.setAuthenticatedUsername(result.username);
+        return { ...result, sessionToken: session.sessionToken };
+      }
+      case "auth:pass-enable":
+        return withSession(payload, (record) => handlePassEnable(db, record, payload));
+      case "auth:pass-disable":
+        return withSession(payload, (record) => handlePassDisable(db, record));
+      case "auth:pass-challenge":
+        return handlePassChallenge(db, payload);
+      case "auth:pass-verify": {
+        const result = await handlePassVerify(db, payload);
+        const session = await issueSession(db, result.username);
+        connectionContext.setAuthenticatedUsername(result.username);
+        return { ...result, sessionToken: session.sessionToken };
+      }
+      case "auth:forgot-password-request":
+        return handleForgotPasswordRequest(db, pepper, payload);
+      case "auth:forgot-password-verify": {
+        const result = await handleForgotPasswordVerify(db, pepper, payload);
+        const session = await issueSession(db, result.username);
+        connectionContext.setAuthenticatedUsername(result.username);
+        return { ...result, sessionToken: session.sessionToken };
+      }
+      case "auth:salt-for-session":
+        return withSession(payload, (record) => handleSaltForSession(db, pepper, record));
       case "auth:resume": {
         const result = await resumeSession(db, payload && payload.sessionToken);
         connectionContext.setAuthenticatedUsername(result.username);
@@ -70,6 +153,20 @@ export async function createHangoutsServer(options = {}) {
         connectionContext.clearAuthenticatedUsername();
         return { loggedOut: true };
       }
+      case "settings:enable-2fa":
+        return withSession(payload, (record) => handleEnable2fa(db, record));
+      case "settings:disable-2fa":
+        return withSession(payload, (record) => handleDisable2fa(db, record));
+      case "settings:change-email-request":
+        return withSession(payload, (record) => handleChangeEmailRequest(db, record, payload));
+      case "settings:change-email-verify":
+        return withSession(payload, (record) => handleChangeEmailVerify(db, record, payload));
+      case "settings:change-password":
+        return withSession(payload, (record, tokenHash) => handleChangePassword(db, pepper, record, tokenHash, payload));
+      case "settings:change-bio":
+        return withSession(payload, (record) => handleChangeBio(db, record, payload));
+      case "settings:change-pfp":
+        return withSession(payload, (record) => handleChangePfp(db, record, payload));
       case "carousel:get-all":
         return handleCarouselGetAll(db);
       case "carousel:upsert": {
@@ -122,6 +219,7 @@ export async function createHangoutsServer(options = {}) {
   const pruneInterval = setInterval(() => {
     pruneOldAttempts(db);
     pruneExpiredSessions(db);
+    pruneExpiredVerifications(db);
   }, 10 * 60 * 1000);
   const sweepInterval = setInterval(() => handshakeBucket.sweep(60 * 60 * 1000), 30 * 60 * 1000);
   pruneInterval.unref?.();

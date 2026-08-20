@@ -7,6 +7,9 @@ import {
   constantTimeEqual
 } from "./codec.js";
 import { Codes, taggedError } from "./codes.js";
+import { createPendingVerification, consumePendingVerification } from "./verification.js";
+import { sendCode } from "./mailer.js";
+import { revokeAllSessionsForUser } from "./session.js";
 
 export const ProofOfWorkBits = 18;
 export const IdentityTtlMs = 30 * 60 * 1000;
@@ -15,6 +18,7 @@ export const LockoutWindowMs = 15 * 60 * 1000;
 export const LockoutThreshold = 5;
 export const LockoutBaseMs = 30 * 1000;
 export const ServerRehashIterations = 60000;
+export const PassChallengeTtlMs = 2 * 60 * 1000;
 
 export const HoneypotIdentifiers = new Set([
   "admin",
@@ -26,12 +30,13 @@ export const HoneypotIdentifiers = new Set([
 ]);
 
 const UsernamePattern = /^[a-z0-9_.-]{3,32}$/;
+const EmailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const HexPattern = (byteLength) => new RegExp(`^[0-9a-f]{${byteLength * 2}}$`);
 const PublicKeyHexPattern = /^04[0-9a-f]{128}$/;
 const SignatureHexPattern = /^[0-9a-f]{128}$/;
 
-function normalizeIdentifier(username) {
-  return String(username).trim().toLowerCase();
+function normalizeIdentifier(value) {
+  return String(value).trim().toLowerCase();
 }
 
 function assertString(value, field, { min = 0, max = Infinity } = {}) {
@@ -150,15 +155,21 @@ async function deriveServerHash(pepper, clientHashHex, serverSaltHex) {
   return bufferToHex(derivedBits);
 }
 
-function validateRegisterPayload(payload) {
+function assertCredentialHashHex(payload, field = "credentialHashHex") {
+  return assertPattern(assertString(payload, field, { min: 64, max: 64 }), field, HexPattern(32));
+}
+
+function validateSignupPayload(payload) {
   if (!payload || typeof payload !== "object") {
     throw taggedError(Codes.MalformedRequest, "Missing payload.");
   }
   const username = assertString(payload.username, "username", { min: 1, max: 64 });
   const identifier = normalizeIdentifier(username);
   assertPattern(identifier, "username", UsernamePattern);
+  const email = normalizeIdentifier(assertString(payload.email, "email", { min: 3, max: 254 }));
+  assertPattern(email, "email", EmailPattern);
   const clientSaltHex = assertPattern(assertString(payload.clientSaltHex, "clientSaltHex", { min: 32, max: 32 }), "clientSaltHex", HexPattern(16));
-  const clientHashHex = assertPattern(assertString(payload.credentialHashHex, "credentialHashHex", { min: 64, max: 64 }), "credentialHashHex", HexPattern(32));
+  const clientHashHex = assertCredentialHashHex(payload.credentialHashHex);
   const identityId = assertPattern(assertString(payload.identityId, "identityId", { min: 32, max: 32 }), "identityId", HexPattern(16));
   const publicKeyHex = assertPattern(assertString(payload.publicKeyHex, "publicKeyHex", { min: 130, max: 130 }), "publicKeyHex", PublicKeyHexPattern);
   const deviceId = assertPattern(assertString(payload.deviceId, "deviceId", { min: 64, max: 64 }), "deviceId", HexPattern(32));
@@ -173,6 +184,7 @@ function validateRegisterPayload(payload) {
   return {
     username,
     identifier,
+    email,
     clientSaltHex,
     clientHashHex,
     identityId,
@@ -259,8 +271,17 @@ export function pruneOldAttempts(db, olderThanMs = 24 * 60 * 60 * 1000) {
   db.prepare("DELETE FROM attempts WHERE timestamp < ?").run(Date.now() - olderThanMs);
 }
 
-export async function handleRegister(db, pepper, rawPayload) {
-  const entry = validateRegisterPayload(rawPayload);
+function accountFields(record) {
+  return {
+    username: record.username,
+    deviceId: record.device_id,
+    publicKeyHex: record.public_key_hex,
+    identityId: record.identity_id
+  };
+}
+
+export async function handleSignupStart(db, pepper, rawPayload) {
+  const entry = validateSignupPayload(rawPayload);
 
   const lockFlag = await getMostRestrictiveLock(db, entry.identifier, entry.deviceId);
   if (lockFlag) {
@@ -298,86 +319,283 @@ export async function handleRegister(db, pepper, rawPayload) {
     throw taggedError(Codes.InvalidCredentials, "Invalid username or password.");
   }
 
-  const existing = db.prepare("SELECT 1 FROM identities WHERE username = ?").get(entry.identifier);
-  if (existing) {
+  const existingUsername = db.prepare("SELECT 1 FROM identities WHERE username = ?").get(entry.identifier);
+  if (existingUsername) {
     throw taggedError(Codes.IdentifierTaken, "That username is already taken.");
   }
+  const existingEmail = db.prepare("SELECT 1 FROM identities WHERE email = ?").get(entry.email);
+  if (existingEmail) {
+    throw taggedError(Codes.IdentifierTaken, "That email is already in use.");
+  }
 
+  db.prepare("INSERT INTO consumed_identities (identity_id, consumed_at) VALUES (?, ?)").run(entry.identityId, now);
+
+  const { id, code } = await createPendingVerification(db, "signup", entry.email, {
+    username: entry.identifier,
+    clientSaltHex: entry.clientSaltHex,
+    clientHashHex: entry.clientHashHex,
+    deviceId: entry.deviceId,
+    identityId: entry.identityId,
+    publicKeyHex: entry.publicKeyHex
+  }, IdentityTtlMs);
+  await sendCode(entry.email, code, "signup");
+
+  return { pendingVerificationId: id };
+}
+
+export async function handleSignupVerify(db, pepper, rawPayload) {
+  if (!rawPayload || typeof rawPayload !== "object") {
+    throw taggedError(Codes.MalformedRequest, "Missing payload.");
+  }
+  const pendingVerificationId = assertString(rawPayload.pendingVerificationId, "pendingVerificationId", { min: 1, max: 64 });
+  const code = assertString(rawPayload.code, "code", { min: 6, max: 6 });
+
+  const staged = await consumePendingVerification(db, "signup", pendingVerificationId, code);
+
+  const existingUsername = db.prepare("SELECT 1 FROM identities WHERE username = ?").get(staged.username);
+  if (existingUsername) {
+    throw taggedError(Codes.IdentifierTaken, "That username is already taken.");
+  }
+  const existingEmail = db.prepare("SELECT 1 FROM identities WHERE email = ?").get(staged.identifier);
+  if (existingEmail) {
+    throw taggedError(Codes.IdentifierTaken, "That email is already in use.");
+  }
+
+  const now = Date.now();
   const serverSaltHex = randomHex(16);
-  const serverHashHex = await deriveServerHash(pepper, entry.clientHashHex, serverSaltHex);
+  const serverHashHex = await deriveServerHash(pepper, staged.clientHashHex, serverSaltHex);
 
-  db.exec("BEGIN");
   try {
     db.prepare(
-      `INSERT INTO identities (username, server_salt_hex, credential_hash_hex, device_id, identity_id, public_key_hex, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
-    ).run(entry.identifier, `${entry.clientSaltHex}:${serverSaltHex}`, serverHashHex, entry.deviceId, entry.identityId, entry.publicKeyHex, now);
-    db.prepare("INSERT INTO consumed_identities (identity_id, consumed_at) VALUES (?, ?)").run(entry.identityId, now);
-    db.exec("COMMIT");
+      `INSERT INTO identities (username, email, server_salt_hex, credential_hash_hex, device_id, identity_id, public_key_hex, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(staged.username, staged.identifier, `${staged.clientSaltHex}:${serverSaltHex}`, serverHashHex, staged.deviceId, staged.identityId, staged.publicKeyHex, now);
   } catch (error) {
-    db.exec("ROLLBACK");
     if (String(error.message).includes("UNIQUE")) {
-      throw taggedError(Codes.IdentifierTaken, "That username is already taken.");
+      throw taggedError(Codes.IdentifierTaken, "That username or email is already taken.");
     }
     throw taggedError(Codes.InternalError, "Could not complete registration.");
   }
 
-  return { username: entry.identifier, deviceId: entry.deviceId, identityId: entry.identityId };
+  const record = db.prepare("SELECT * FROM identities WHERE username = ?").get(staged.username);
+  return accountFields(record);
 }
 
-export async function handleSaltLookup(db, pepper, rawPayload) {
+export async function handleSaltByEmail(db, pepper, rawPayload) {
   if (!rawPayload || typeof rawPayload !== "object") {
     throw taggedError(Codes.MalformedRequest, "Missing payload.");
   }
-  const identifier = normalizeIdentifier(assertString(rawPayload.username, "username", { min: 1, max: 64 }));
-  const record = db.prepare("SELECT server_salt_hex FROM identities WHERE username = ?").get(identifier);
+  const email = normalizeIdentifier(assertString(rawPayload.email, "email", { min: 1, max: 254 }));
+  const record = db.prepare("SELECT server_salt_hex FROM identities WHERE email = ?").get(email);
   if (record) {
     const [clientSaltHex] = record.server_salt_hex.split(":");
     return { saltHex: clientSaltHex };
   }
-  const pseudoSaltHex = await derivePseudoSaltHex(pepper, identifier);
+  const pseudoSaltHex = await derivePseudoSaltHex(pepper, email);
   return { saltHex: pseudoSaltHex };
 }
 
-export async function handleLogin(db, pepper, rawPayload) {
+export async function handleLoginPassword(db, pepper, rawPayload) {
   if (!rawPayload || typeof rawPayload !== "object") {
     throw taggedError(Codes.MalformedRequest, "Missing payload.");
   }
-  const identifier = normalizeIdentifier(assertString(rawPayload.username, "username", { min: 1, max: 64 }));
-  const clientHashHex = assertPattern(
-    assertString(rawPayload.credentialHashHex, "credentialHashHex", { min: 64, max: 64 }),
-    "credentialHashHex",
-    HexPattern(32)
-  );
+  const email = normalizeIdentifier(assertString(rawPayload.email, "email", { min: 1, max: 254 }));
+  const clientHashHex = assertCredentialHashHex(rawPayload.credentialHashHex);
 
-  const flag = await getFlag(db, identifier);
+  const flag = await getFlag(db, email);
   if (isLocked(flag)) {
     throw taggedError(Codes.Locked, "Too many attempts for this identifier.", { retryAfterMs: flag.locked_until - Date.now() });
   }
 
-  const record = db.prepare("SELECT * FROM identities WHERE username = ?").get(identifier);
+  const record = db.prepare("SELECT * FROM identities WHERE email = ?").get(email);
   if (!record) {
-    const pseudoSaltHex = await derivePseudoSaltHex(pepper, identifier);
+    const pseudoSaltHex = await derivePseudoSaltHex(pepper, email);
     await deriveServerHash(pepper, clientHashHex, pseudoSaltHex);
-    recordAttempt(db, identifier, false);
-    evaluateAbuse(db, identifier);
-    throw taggedError(Codes.InvalidCredentials, "Invalid username or password.");
+    recordAttempt(db, email, false);
+    evaluateAbuse(db, email);
+    throw taggedError(Codes.InvalidCredentials, "Invalid email or password.");
   }
 
   const [, serverSaltHex] = record.server_salt_hex.split(":");
   const candidateHashHex = await deriveServerHash(pepper, clientHashHex, serverSaltHex);
   const matches = constantTimeEqual(hexToBuffer(candidateHashHex), hexToBuffer(record.credential_hash_hex));
-  recordAttempt(db, identifier, matches);
+  recordAttempt(db, email, matches);
   if (!matches) {
-    evaluateAbuse(db, identifier);
-    throw taggedError(Codes.InvalidCredentials, "Invalid username or password.");
+    evaluateAbuse(db, email);
+    throw taggedError(Codes.InvalidCredentials, "Invalid email or password.");
+  }
+  setFlag(db, email, { level: "Clear", lockedUntil: 0, failureCount: 0 });
+
+  if (record.two_factor_enabled) {
+    const { id, code } = await createPendingVerification(db, "2fa", email, { username: record.username });
+    await sendCode(email, code, "2fa");
+    return { requires2fa: true, pendingVerificationId: id };
   }
 
-  setFlag(db, identifier, { level: "Clear", lockedUntil: 0, failureCount: 0 });
-  return {
-    username: record.username,
-    deviceId: record.device_id,
-    publicKeyHex: record.public_key_hex,
-    identityId: record.identity_id
-  };
+  return accountFields(record);
 }
+
+export async function handleLoginVerify2fa(db, pepper, rawPayload) {
+  if (!rawPayload || typeof rawPayload !== "object") {
+    throw taggedError(Codes.MalformedRequest, "Missing payload.");
+  }
+  const pendingVerificationId = assertString(rawPayload.pendingVerificationId, "pendingVerificationId", { min: 1, max: 64 });
+  const code = assertString(rawPayload.code, "code", { min: 6, max: 6 });
+  const staged = await consumePendingVerification(db, "2fa", pendingVerificationId, code);
+  const record = db.prepare("SELECT * FROM identities WHERE username = ?").get(staged.username);
+  if (!record) {
+    throw taggedError(Codes.InvalidCredentials, "Invalid email or password.");
+  }
+  return accountFields(record);
+}
+
+export async function handleLoginCodeRequest(db, pepper, rawPayload) {
+  if (!rawPayload || typeof rawPayload !== "object") {
+    throw taggedError(Codes.MalformedRequest, "Missing payload.");
+  }
+  const email = normalizeIdentifier(assertString(rawPayload.email, "email", { min: 1, max: 254 }));
+  const record = db.prepare("SELECT username FROM identities WHERE email = ?").get(email);
+  if (record) {
+    const { id, code } = await createPendingVerification(db, "login-code", email, { username: record.username });
+    await sendCode(email, code, "login-code");
+    return { sent: true, pendingVerificationId: id };
+  }
+  return { sent: true, pendingVerificationId: randomHex(16) };
+}
+
+export async function handleLoginCodeVerify(db, pepper, rawPayload) {
+  if (!rawPayload || typeof rawPayload !== "object") {
+    throw taggedError(Codes.MalformedRequest, "Missing payload.");
+  }
+  const pendingVerificationId = assertString(rawPayload.pendingVerificationId, "pendingVerificationId", { min: 1, max: 64 });
+  const code = assertString(rawPayload.code, "code", { min: 6, max: 6 });
+  const staged = await consumePendingVerification(db, "login-code", pendingVerificationId, code);
+  const record = db.prepare("SELECT * FROM identities WHERE username = ?").get(staged.username);
+  if (!record) {
+    throw taggedError(Codes.InvalidCredentials, "Invalid code.");
+  }
+  return accountFields(record);
+}
+
+const passChallenges = new Map();
+
+function prunePassChallenges() {
+  const now = Date.now();
+  for (const [id, challenge] of passChallenges) {
+    if (challenge.expiresAt <= now) {
+      passChallenges.delete(id);
+    }
+  }
+}
+
+export function handlePassEnable(db, record, rawPayload) {
+  if (!rawPayload || typeof rawPayload !== "object") {
+    throw taggedError(Codes.MalformedRequest, "Missing payload.");
+  }
+  const publicKeyHex = assertPattern(assertString(rawPayload.publicKeyHex, "publicKeyHex", { min: 130, max: 130 }), "publicKeyHex", PublicKeyHexPattern);
+  db.prepare("UPDATE identities SET pass_public_key_hex = ? WHERE username = ?").run(publicKeyHex, record.username);
+  return { enabled: true };
+}
+
+export function handlePassDisable(db, record) {
+  db.prepare("UPDATE identities SET pass_public_key_hex = NULL WHERE username = ?").run(record.username);
+  return { disabled: true };
+}
+
+export function handlePassChallenge(db, rawPayload) {
+  if (!rawPayload || typeof rawPayload !== "object") {
+    throw taggedError(Codes.MalformedRequest, "Missing payload.");
+  }
+  const email = normalizeIdentifier(assertString(rawPayload.email, "email", { min: 1, max: 254 }));
+  prunePassChallenges();
+  const challengeId = randomHex(16);
+  const nonceHex = randomHex(32);
+  passChallenges.set(challengeId, { email, nonceHex, expiresAt: Date.now() + PassChallengeTtlMs });
+  return { challengeId, nonceHex };
+}
+
+export async function handlePassVerify(db, rawPayload) {
+  if (!rawPayload || typeof rawPayload !== "object") {
+    throw taggedError(Codes.MalformedRequest, "Missing payload.");
+  }
+  const challengeId = assertString(rawPayload.challengeId, "challengeId", { min: 1, max: 64 });
+  const signatureHex = assertPattern(assertString(rawPayload.signatureHex, "signatureHex", { min: 128, max: 128 }), "signatureHex", SignatureHexPattern);
+
+  const challenge = passChallenges.get(challengeId);
+  if (!challenge || challenge.expiresAt <= Date.now()) {
+    passChallenges.delete(challengeId);
+    throw taggedError(Codes.ChallengeExpired, "This challenge has expired.");
+  }
+  passChallenges.delete(challengeId);
+
+  const record = db.prepare("SELECT * FROM identities WHERE email = ?").get(challenge.email);
+  if (!record || !record.pass_public_key_hex) {
+    throw taggedError(Codes.InvalidCredentials, "Pass is not enabled for this account.");
+  }
+
+  const publicKey = await subtle.importKey(
+    "raw",
+    hexToBuffer(record.pass_public_key_hex),
+    { name: "ECDSA", namedCurve: "P-256" },
+    false,
+    ["verify"]
+  );
+  const valid = await subtle.verify(
+    { name: "ECDSA", hash: "SHA-256" },
+    publicKey,
+    hexToBuffer(signatureHex),
+    hexToBuffer(challenge.nonceHex)
+  );
+  if (!valid) {
+    throw taggedError(Codes.InvalidCredentials, "Pass signature invalid.");
+  }
+  return accountFields(record);
+}
+
+export async function handleForgotPasswordRequest(db, pepper, rawPayload) {
+  if (!rawPayload || typeof rawPayload !== "object") {
+    throw taggedError(Codes.MalformedRequest, "Missing payload.");
+  }
+  const email = normalizeIdentifier(assertString(rawPayload.email, "email", { min: 1, max: 254 }));
+  const record = db.prepare("SELECT username FROM identities WHERE email = ?").get(email);
+  if (record) {
+    const { id, code } = await createPendingVerification(db, "reset", email, { username: record.username });
+    await sendCode(email, code, "reset");
+    return { sent: true, pendingVerificationId: id };
+  }
+  return { sent: true, pendingVerificationId: randomHex(16) };
+}
+
+export async function handleForgotPasswordVerify(db, pepper, rawPayload) {
+  if (!rawPayload || typeof rawPayload !== "object") {
+    throw taggedError(Codes.MalformedRequest, "Missing payload.");
+  }
+  const pendingVerificationId = assertString(rawPayload.pendingVerificationId, "pendingVerificationId", { min: 1, max: 64 });
+  const code = assertString(rawPayload.code, "code", { min: 6, max: 6 });
+  const clientSaltHex = assertPattern(assertString(rawPayload.clientSaltHex, "clientSaltHex", { min: 32, max: 32 }), "clientSaltHex", HexPattern(16));
+  const clientHashHex = assertCredentialHashHex(rawPayload.credentialHashHex);
+
+  const staged = await consumePendingVerification(db, "reset", pendingVerificationId, code);
+  const record = db.prepare("SELECT * FROM identities WHERE username = ?").get(staged.username);
+  if (!record) {
+    throw taggedError(Codes.InvalidCredentials, "Invalid code.");
+  }
+
+  const serverSaltHex = randomHex(16);
+  const serverHashHex = await deriveServerHash(pepper, clientHashHex, serverSaltHex);
+  db.prepare("UPDATE identities SET server_salt_hex = ?, credential_hash_hex = ? WHERE username = ?").run(
+    `${clientSaltHex}:${serverSaltHex}`,
+    serverHashHex,
+    record.username
+  );
+  revokeAllSessionsForUser(db, record.username);
+
+  return accountFields({ ...record, server_salt_hex: `${clientSaltHex}:${serverSaltHex}`, credential_hash_hex: serverHashHex });
+}
+
+export function handleSaltForSession(db, pepper, record) {
+  const [clientSaltHex] = record.server_salt_hex.split(":");
+  return { saltHex: clientSaltHex };
+}
+
+export { deriveServerHash, normalizeIdentifier, assertCredentialHashHex, HexPattern };

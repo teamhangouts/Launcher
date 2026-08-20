@@ -45,6 +45,23 @@ export async function resumeSession(db, token) {
   };
 }
 
+export async function requireSession(db, token) {
+  if (typeof token !== "string" || !token) {
+    throw taggedError(Codes.InvalidCredentials, "Invalid session.");
+  }
+  const tokenHash = await hashToken(token);
+  const row = db.prepare("SELECT * FROM sessions WHERE token_hash = ?").get(tokenHash);
+  if (!row || row.expires_at <= Date.now()) {
+    throw taggedError(Codes.InvalidCredentials, "Session expired or invalid.");
+  }
+  const record = db.prepare("SELECT * FROM identities WHERE username = ?").get(row.username);
+  if (!record) {
+    db.prepare("DELETE FROM sessions WHERE token_hash = ?").run(tokenHash);
+    throw taggedError(Codes.InvalidCredentials, "Session expired or invalid.");
+  }
+  return { record, tokenHash };
+}
+
 export async function revokeSession(db, token) {
   const tokenHash = await hashToken(token);
   db.prepare("DELETE FROM sessions WHERE token_hash = ?").run(tokenHash);
