@@ -1,0 +1,19 @@
+{
+  "name": "hangouts-pipeline-server",
+  "version": "0.1.0",
+  "description": "Minimal WebSocket server implementing the Hangouts Pipeline handshake and Security auth flows.",
+  "type": "module",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "license": "UNLICENSED",
+  "private": true,
+  "dependencies": {
+    "ws": "^8.21.3"
+  }
+}
