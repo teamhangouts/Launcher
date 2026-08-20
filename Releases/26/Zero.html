@@ -979,30 +979,18 @@ function EnclaveSetStatus(EnclaveMessage, EnclaveIsError) {
   EnclaveStatusNode.classList.toggle("EnclaveStatusError", Boolean(EnclaveIsError));
 }
 
-function EnclaveAppendNode(EnclaveParent, EnclaveNode) {
-  if (EnclaveNode.nodeType === Node.ELEMENT_NODE && EnclaveNode.tagName === "SCRIPT") {
-    const EnclaveScript = document.createElement("script");
-    for (const EnclaveAttribute of Array.from(EnclaveNode.attributes)) {
-      EnclaveScript.setAttribute(EnclaveAttribute.name, EnclaveAttribute.value);
-    }
-    EnclaveScript.textContent = EnclaveNode.textContent;
-    EnclaveParent.appendChild(EnclaveScript);
-    return;
-  }
-  EnclaveParent.appendChild(document.importNode(EnclaveNode, true));
-}
+const EnclaveDownloadFileName = "Hangouts.html";
 
-function EnclaveBoot(EnclaveHtml) {
-  const EnclaveParsedDoc = new DOMParser().parseFromString(EnclaveHtml, "text/html");
-  document.title = EnclaveParsedDoc.title;
-  document.head.innerHTML = "";
-  document.body.innerHTML = "";
-  for (const EnclaveHeadNode of Array.from(EnclaveParsedDoc.head.childNodes)) {
-    EnclaveAppendNode(document.head, EnclaveHeadNode);
-  }
-  for (const EnclaveBodyNode of Array.from(EnclaveParsedDoc.body.childNodes)) {
-    EnclaveAppendNode(document.body, EnclaveBodyNode);
-  }
+function EnclaveTriggerDownload(EnclaveHtml, EnclaveFileName) {
+  const EnclaveBlob = new Blob([EnclaveHtml], { type: "text/html" });
+  const EnclaveObjectUrl = URL.createObjectURL(EnclaveBlob);
+  const EnclaveAnchor = document.createElement("a");
+  EnclaveAnchor.href = EnclaveObjectUrl;
+  EnclaveAnchor.download = EnclaveFileName;
+  document.body.appendChild(EnclaveAnchor);
+  EnclaveAnchor.click();
+  EnclaveAnchor.remove();
+  URL.revokeObjectURL(EnclaveObjectUrl);
 }
 
 async function EnclaveRun() {
@@ -1016,7 +1004,8 @@ async function EnclaveRun() {
     if (!EnclaveVerified) {
       throw EnclaveTaggedError(EnclaveErrorReleaseUnsigned, "The Hangouts release signature could not be verified.");
     }
-    EnclaveBoot(EnclaveHtml);
+    EnclaveTriggerDownload(EnclaveHtml, EnclaveDownloadFileName);
+    EnclaveSetStatus(`${EnclaveDownloadFileName} downloaded — open it from your downloads to launch Hangouts.`);
   } catch (EnclaveError) {
     const EnclaveCode = EnclaveError && EnclaveError.code ? EnclaveError.code : EnclaveErrorManifestUnreachable;
     const EnclaveMessage = EnclaveError && EnclaveError.message ? EnclaveError.message : "Could not reach Hangouts.";
