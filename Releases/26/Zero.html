@@ -477,10 +477,30 @@ function EnclaveSetStatus(EnclaveMessage, EnclaveIsError) {
   EnclaveStatusNode.classList.toggle("EnclaveStatusError", Boolean(EnclaveIsError));
 }
 
+function EnclaveAppendNode(EnclaveParent, EnclaveNode) {
+  if (EnclaveNode.nodeType === Node.ELEMENT_NODE && EnclaveNode.tagName === "SCRIPT") {
+    const EnclaveScript = document.createElement("script");
+    for (const EnclaveAttribute of Array.from(EnclaveNode.attributes)) {
+      EnclaveScript.setAttribute(EnclaveAttribute.name, EnclaveAttribute.value);
+    }
+    EnclaveScript.textContent = EnclaveNode.textContent;
+    EnclaveParent.appendChild(EnclaveScript);
+    return;
+  }
+  EnclaveParent.appendChild(document.importNode(EnclaveNode, true));
+}
+
 function EnclaveBoot(EnclaveHtml) {
-  document.open();
-  document.write(EnclaveHtml);
-  document.close();
+  const EnclaveParsedDoc = new DOMParser().parseFromString(EnclaveHtml, "text/html");
+  document.title = EnclaveParsedDoc.title;
+  document.head.innerHTML = "";
+  document.body.innerHTML = "";
+  for (const EnclaveHeadNode of Array.from(EnclaveParsedDoc.head.childNodes)) {
+    EnclaveAppendNode(document.head, EnclaveHeadNode);
+  }
+  for (const EnclaveBodyNode of Array.from(EnclaveParsedDoc.body.childNodes)) {
+    EnclaveAppendNode(document.body, EnclaveBodyNode);
+  }
 }
 
 async function EnclaveRun() {
