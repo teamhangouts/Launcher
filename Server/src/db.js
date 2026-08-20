@@ -47,6 +47,24 @@ export function openDatabase(path = dbPath) {
       locked_until INTEGER NOT NULL,
       failure_count INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS carousel_slides (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      image_url TEXT,
+      link_url TEXT,
+      sort_order INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS newsletter (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      published_at INTEGER NOT NULL
+    );
   `);
   return db;
 }

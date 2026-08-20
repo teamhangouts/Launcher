@@ -231,4 +231,16 @@ export function attachConnection(ws, { serverIdentity, dispatch, log, remoteAddr
       }
     }
   }
+
+  async function push(type, payload) {
+    if (closed || !sessionKey) {
+      return;
+    }
+    const envelope = await encryptEnvelope(sessionKey, sendSeqBox, { type, payload });
+    if (!closed) {
+      ws.send(envelope);
+    }
+  }
+
+  return { push };
 }

@@ -98,6 +98,14 @@ export class TestPipelineClient {
     this.requestCounter = 0;
     this.pending = new Map();
     this.pinnedIdentity = null;
+    this.pushListeners = new Map();
+  }
+
+  onPush(type, handler) {
+    if (!this.pushListeners.has(type)) {
+      this.pushListeners.set(type, new Set());
+    }
+    this.pushListeners.get(type).add(handler);
   }
 
   async connect() {
@@ -180,6 +188,15 @@ export class TestPipelineClient {
       );
       message = JSON.parse(utf8Decode(plainBuffer));
     } catch {
+      return;
+    }
+    if (!message.requestId) {
+      const handlers = this.pushListeners.get(message.type);
+      if (handlers) {
+        for (const handler of handlers) {
+          handler(message.payload);
+        }
+      }
       return;
     }
     const pending = this.pending.get(message.requestId);

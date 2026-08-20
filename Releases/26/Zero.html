@@ -848,6 +848,47 @@ function PipelineConnect() {
   }));
 }
 
+let CarouselSlides = [];
+let NewsletterCurrent = null;
+
+function CarouselUpsertLocal(CarouselSlide) {
+  const CarouselIndex = CarouselSlides.findIndex((CarouselExisting) => CarouselExisting.id === CarouselSlide.id);
+  if (CarouselIndex === -1) {
+    CarouselSlides.push(CarouselSlide);
+  } else {
+    CarouselSlides[CarouselIndex] = CarouselSlide;
+  }
+  CarouselSlides.sort((CarouselA, CarouselB) => CarouselA.order - CarouselB.order);
+}
+
+function CarouselRemoveLocal(CarouselId) {
+  CarouselSlides = CarouselSlides.filter((CarouselSlide) => CarouselSlide.id !== CarouselId);
+}
+
+async function CarouselSync() {
+  const CarouselResponse = await PipelineSendRequest("carousel:get-all", {});
+  CarouselSlides = [...CarouselResponse.slides].sort((CarouselA, CarouselB) => CarouselA.order - CarouselB.order);
+}
+
+async function NewsletterSync() {
+  const NewsletterResponse = await PipelineSendRequest("newsletter:get", {});
+  NewsletterCurrent = NewsletterResponse.newsletter;
+}
+
+PipelineOn("message:carousel:update", (CarouselSlide) => CarouselUpsertLocal(CarouselSlide));
+PipelineOn("message:carousel:remove", (CarouselRemoval) => CarouselRemoveLocal(CarouselRemoval.id));
+PipelineOn("message:newsletter:update", (NewsletterPayload) => {
+  NewsletterCurrent = NewsletterPayload;
+});
+
+async function ContentConnectAndSync() {
+  try {
+    await PipelineConnect();
+    await CarouselSync();
+    await NewsletterSync();
+  } catch {}
+}
+
 const EnclaveRepo = "teamhangouts/Hangouts";
 const EnclaveAssetsRepo = "teamhangouts/Assets";
 const EnclaveBranch = "main";
@@ -1022,6 +1063,7 @@ async function EnclaveRun() {
 }
 
 EnclaveLoadFonts();
+ContentConnectAndSync();
 EnclaveSetStatus(`${EnclaveErrorUnauthorized}: Sign in to a Hangouts account to continue.`, true);
 </script>
 </body>
