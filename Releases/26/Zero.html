@@ -370,6 +370,7 @@ async function SecurityFinalizeRegistration(SecurityIdentityId, SecurityUsername
   await SecurityStorePrivateKey(SecurityResponse.username, SecurityPrivateKey, 0);
   await SecurityDeleteKeyRecord(SecurityIdentityId);
   SecurityClearCache();
+  EnclaveAuthorizeAndRun(SecurityResponse).catch(() => {});
   return SecurityResponse;
 }
 
@@ -380,10 +381,12 @@ async function SecurityAuthenticateAccount(SecurityUsername, SecurityPassword) {
   const SecuritySaltResponse = await PipelineSendRequest("auth:salt", { username: SecurityIdentifier });
   const SecurityCredentialHashHex = await SecurityDeriveCredentialHash(SecurityPassword, SecuritySaltResponse.saltHex);
 
-  return PipelineSendRequest("auth:login", {
+  const SecurityLoginResponse = await PipelineSendRequest("auth:login", {
     username: SecurityIdentifier,
     credentialHashHex: SecurityCredentialHashHex
   });
+  EnclaveAuthorizeAndRun(SecurityLoginResponse).catch(() => {});
+  return SecurityLoginResponse;
 }
 
 const PipelineHandshakeTimeoutMs = 10000;
@@ -863,6 +866,7 @@ const EnclaveErrorManifestUnreachable = "E2";
 const EnclaveErrorManifestMalformed = "E3";
 const EnclaveErrorReleaseUnreachable = "E4";
 const EnclaveErrorReleaseUnsigned = "E5";
+const EnclaveErrorUnauthorized = "E6";
 
 function EnclaveTaggedError(EnclaveCode, EnclaveMessage) {
   const EnclaveError = new Error(EnclaveMessage);
@@ -950,7 +954,29 @@ function EnclaveTriggerDownload(EnclaveHtml, EnclaveFileName) {
   URL.revokeObjectURL(EnclaveObjectUrl);
 }
 
+let EnclaveAuthorizedSession = null;
+
+function EnclaveIsAuthorized() {
+  return Boolean(EnclaveAuthorizedSession);
+}
+
+// Security is the only caller allowed to unlock Enclave — a verified,
+// server-confirmed account (fresh registration or login) is the gate, not
+// just "a form was submitted." This is what keeps an anonymous visitor from
+// spinning up free CDN egress against the release manifest/asset repos.
+async function EnclaveAuthorizeAndRun(SecuritySession) {
+  if (!SecuritySession || !SecuritySession.username) {
+    throw new Error("EnclaveUnauthorized");
+  }
+  EnclaveAuthorizedSession = SecuritySession;
+  await EnclaveRun();
+}
+
 async function EnclaveRun() {
+  if (!EnclaveIsAuthorized()) {
+    EnclaveSetStatus(`${EnclaveErrorUnauthorized}: Sign in to a Hangouts account to continue.`, true);
+    return;
+  }
   try {
     EnclaveSetStatus("Locating latest release...");
     const EnclaveManifest = await EnclaveFetchManifest();
@@ -971,7 +997,7 @@ async function EnclaveRun() {
 }
 
 EnclaveLoadFonts();
-EnclaveRun();
+EnclaveSetStatus(`${EnclaveErrorUnauthorized}: Sign in to a Hangouts account to continue.`, true);
 </script>
 </body>
 </html>
