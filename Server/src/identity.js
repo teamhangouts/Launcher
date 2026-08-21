@@ -4,18 +4,17 @@ import { fileURLToPath } from "node:url";
 import { subtle, randomHex, bufferToHex, hexToBuffer } from "./codec.js";
 
 const rootDir = dirname(dirname(fileURLToPath(import.meta.url)));
-const secretsDir = join(rootDir, ".secrets");
-const identityPath = join(secretsDir, "identity.json");
-const pepperPath = join(secretsDir, "pepper.hex");
+const defaultSecretsDir = join(rootDir, ".secrets");
 
-function ensureSecretsDir() {
+function ensureSecretsDir(secretsDir) {
   if (!existsSync(secretsDir)) {
     mkdirSync(secretsDir, { recursive: true, mode: 0o700 });
   }
 }
 
-export async function loadOrCreateServerIdentity() {
-  ensureSecretsDir();
+export async function loadOrCreateServerIdentity(secretsDir = defaultSecretsDir) {
+  ensureSecretsDir(secretsDir);
+  const identityPath = join(secretsDir, "identity.json");
   if (existsSync(identityPath)) {
     const stored = JSON.parse(readFileSync(identityPath, "utf8"));
     const privateKey = await subtle.importKey(
@@ -42,8 +41,9 @@ export async function loadOrCreateServerIdentity() {
   return { privateKey: nonExtractablePrivateKey, publicKeyHex };
 }
 
-export function loadOrCreatePepper() {
-  ensureSecretsDir();
+export function loadOrCreatePepper(secretsDir = defaultSecretsDir) {
+  ensureSecretsDir(secretsDir);
+  const pepperPath = join(secretsDir, "pepper.hex");
   if (existsSync(pepperPath)) {
     return hexToBuffer(readFileSync(pepperPath, "utf8").trim());
   }

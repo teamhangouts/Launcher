@@ -30,6 +30,7 @@ export function openDatabase(path = dbPath) {
       pfp_mime TEXT,
       two_factor_enabled INTEGER NOT NULL DEFAULT 0,
       pass_public_key_hex TEXT,
+      chat_banned INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_identities_email ON identities(email);
@@ -88,6 +89,40 @@ export function openDatabase(path = dbPath) {
     );
     CREATE INDEX IF NOT EXISTS idx_pending_verifications_identifier_purpose
       ON pending_verifications(identifier, purpose);
+
+    CREATE TABLE IF NOT EXISTS chat_rooms (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      name TEXT,
+      visibility TEXT NOT NULL DEFAULT 'public',
+      owner_username TEXT,
+      root_message_id TEXT,
+      created_at INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_rooms_thread_root
+      ON chat_rooms(root_message_id) WHERE kind = 'thread';
+
+    INSERT OR IGNORE INTO chat_rooms (id, kind, name, visibility, owner_username, root_message_id, created_at)
+      VALUES ('main', 'main', 'Main', 'public', NULL, NULL, 0);
+
+    CREATE TABLE IF NOT EXISTS chat_room_invites (
+      room_id TEXT NOT NULL,
+      username TEXT NOT NULL,
+      invited_by TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (room_id, username)
+    );
+
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      id TEXT PRIMARY KEY,
+      room_id TEXT NOT NULL,
+      username TEXT NOT NULL,
+      body TEXT NOT NULL,
+      deleted_at INTEGER,
+      deleted_by TEXT,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_chat_messages_room_created ON chat_messages(room_id, created_at);
   `);
   return db;
 }

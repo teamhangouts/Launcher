@@ -40,6 +40,18 @@ import {
   handleModuleUpsert,
   handleModuleDelete
 } from "./modules.js";
+import {
+  resolveRoomAudience,
+  handleChatListRooms,
+  handleChatGetRoom,
+  handleChatSend,
+  handleChatGetThreadForMessage,
+  handleChatCreateThread,
+  handleChatCreateRoom,
+  handleChatInvite,
+  handleChatDeleteMessage,
+  handleChatSetBanned
+} from "./chat.js";
 import { Codes, taggedError } from "./codes.js";
 import { TokenBucket, ConnectionCounter } from "./ratelimit.js";
 
@@ -47,9 +59,9 @@ const DefaultPort = Number(process.env.PORT || 443);
 
 export async function createHangoutsServer(options = {}) {
   const db = openDatabase(options.dbPath);
-  const pepper = loadOrCreatePepper();
-  const adminToken = loadOrCreateAdminToken();
-  const serverIdentity = await loadOrCreateServerIdentity();
+  const pepper = loadOrCreatePepper(options.secretsDir);
+  const adminToken = loadOrCreateAdminToken(options.secretsDir);
+  const serverIdentity = await loadOrCreateServerIdentity(options.secretsDir);
 
   const maxConnectionsPerIp = options.maxConnectionsPerIp ?? Number(process.env.MAX_CONNECTIONS_PER_IP || 20);
   const handshakeBucketOptions = options.handshakeBucket ?? { capacity: 10, refillPerMs: 10 / 60000 };
@@ -65,6 +77,20 @@ export async function createHangoutsServer(options = {}) {
 
   async function broadcast(type, payload) {
     for (const connection of connections) {
+      connection.push(type, payload).catch(() => {});
+    }
+  }
+
+  async function broadcastToRoom(roomId, type, payload) {
+    const audience = resolveRoomAudience(db, roomId);
+    for (const connection of connections) {
+      const username = connection.getAuthenticatedUsername();
+      if (!username) {
+        continue;
+      }
+      if (audience && !audience.has(username)) {
+        continue;
+      }
       connection.push(type, payload).catch(() => {});
     }
   }
@@ -175,6 +201,38 @@ export async function createHangoutsServer(options = {}) {
         broadcast("module:delete", result);
         return result;
       }
+      case "chat:list-rooms":
+        return withSession(payload, (record) => handleChatListRooms(db, record));
+      case "chat:get-room":
+        return withSession(payload, (record) => handleChatGetRoom(db, record, payload));
+      case "chat:send":
+        return withSession(payload, (record) => {
+          const message = handleChatSend(db, record, payload);
+          broadcastToRoom(message.roomId, "chat:message", message);
+          return message;
+        });
+      case "chat:get-thread-for-message":
+        return handleChatGetThreadForMessage(db, payload);
+      case "chat:create-thread":
+        return withSession(payload, (record) => {
+          const result = handleChatCreateThread(db, record, payload);
+          if (result.created) {
+            broadcastToRoom("main", "chat:thread-created", result.room);
+          }
+          broadcastToRoom(result.room.id, "chat:message", result.message);
+          return result;
+        });
+      case "chat:create-room":
+        return withSession(payload, (record) => handleChatCreateRoom(db, record, payload));
+      case "chat:invite":
+        return withSession(payload, (record) => handleChatInvite(db, record, payload));
+      case "chat:delete-message": {
+        const result = handleChatDeleteMessage(db, adminToken, payload);
+        broadcastToRoom(result.roomId, "chat:message-deleted", result);
+        return result;
+      }
+      case "chat:set-banned":
+        return handleChatSetBanned(db, adminToken, payload);
       default:
         throw taggedError(Codes.MalformedRequest, "Unknown request type.");
     }

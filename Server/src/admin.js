@@ -5,17 +5,17 @@ import { randomHex, constantTimeEqual, hexToBuffer } from "./codec.js";
 import { Codes, taggedError } from "./codes.js";
 
 const rootDir = dirname(dirname(fileURLToPath(import.meta.url)));
-const secretsDir = join(rootDir, ".secrets");
-const adminTokenPath = join(secretsDir, "admin-token.hex");
+const defaultSecretsDir = join(rootDir, ".secrets");
 
-function ensureSecretsDir() {
+function ensureSecretsDir(secretsDir) {
   if (!existsSync(secretsDir)) {
     mkdirSync(secretsDir, { recursive: true, mode: 0o700 });
   }
 }
 
-export function loadOrCreateAdminToken() {
-  ensureSecretsDir();
+export function loadOrCreateAdminToken(secretsDir = defaultSecretsDir) {
+  ensureSecretsDir(secretsDir);
+  const adminTokenPath = join(secretsDir, "admin-token.hex");
   if (existsSync(adminTokenPath)) {
     return readFileSync(adminTokenPath, "utf8").trim();
   }

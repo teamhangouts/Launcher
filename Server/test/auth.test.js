@@ -4,7 +4,7 @@ import { createHangoutsServer } from "../src/server.js";
 import { LockoutThreshold, IdentityTtlMs } from "../src/auth.js";
 import { randomHex } from "../src/codec.js";
 import { onSend } from "../src/mailer.js";
-import { TestPipelineClient, buildRegistrationEntry, deriveCredentialHash } from "./testClient.js";
+import { TestPipelineClient, buildRegistrationEntry, deriveCredentialHash, createIsolatedSecretsDir } from "./testClient.js";
 
 let server;
 let url;
@@ -13,6 +13,7 @@ let lastCode;
 before(async () => {
   server = await createHangoutsServer({
     dbPath: ":memory:",
+    secretsDir: createIsolatedSecretsDir(),
     maxConnectionsPerIp: 200,
     handshakeBucket: { capacity: 500, refillPerMs: 500 / 1000 }
   });

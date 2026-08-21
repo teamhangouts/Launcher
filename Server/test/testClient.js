@@ -1,4 +1,7 @@
 import WebSocket from "ws";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   subtle,
   randomBytes,
@@ -13,6 +16,10 @@ import {
   randomHex
 } from "../src/codec.js";
 import { ProofOfWorkBits, IdentityTtlMs } from "../src/auth.js";
+
+export function createIsolatedSecretsDir() {
+  return mkdtempSync(join(tmpdir(), "hangouts-test-secrets-"));
+}
 
 function countLeadingZeroBits(buffer) {
   const bytes = new Uint8Array(buffer);

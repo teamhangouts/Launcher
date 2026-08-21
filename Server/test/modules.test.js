@@ -1,7 +1,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createHangoutsServer } from "../src/server.js";
-import { TestPipelineClient } from "./testClient.js";
+import { TestPipelineClient, createIsolatedSecretsDir } from "./testClient.js";
 
 let server;
 let url;
@@ -10,6 +10,7 @@ let adminToken;
 before(async () => {
   server = await createHangoutsServer({
     dbPath: ":memory:",
+    secretsDir: createIsolatedSecretsDir(),
     maxConnectionsPerIp: 200,
     handshakeBucket: { capacity: 500, refillPerMs: 500 / 1000 }
   });
