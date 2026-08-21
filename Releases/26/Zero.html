@@ -5,14 +5,29 @@
 <title>Hangouts Launcher</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-:root{color-scheme:dark;--color-bg:#0F0F0F}
+:root{color-scheme:dark;--color-bg:#0F0F0F;--color-text:#fff;--color-surface-active:#27272A}
 html,body{height:100%;margin:0}
 body{display:flex;align-items:center;justify-content:center;background:var(--color-bg);color:#e7e7ea;font:14px/1.4 "Geist",sans-serif}
 #EnclaveStatus{opacity:.7;letter-spacing:.02em}
 #EnclaveStatus.EnclaveStatusError{color:#ff6b6b;opacity:1}
+#layout-sidebar{position:fixed;top:0;left:10px;bottom:0;width:64px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:25px}
+.layout-nav-item{width:40px;height:40px;border:none;border-radius:50%;background:none;color:var(--color-text);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:transform 100ms ease,background-color 100ms ease}
+.layout-nav-item:hover{transform:scale(1.02)}
+.layout-nav-item:active{transform:scale(0.96)}
+.layout-nav-item svg{width:24px;height:24px;display:block}
+.layout-nav-item.layout-active{background:var(--color-surface-active)}
+#layout-brand-logo{position:absolute;top:26px;left:16px}
+#layout-brand-logo svg{width:32px;height:auto;display:block}
 </style>
 </head>
 <body>
+<nav id="layout-sidebar">
+<div id="layout-brand-logo" aria-hidden="true"><svg width="45" height="42" viewBox="0 0 45 42" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12.5391 41.7773C11.9271 41.7773 11.4453 41.5755 11.0938 41.1719C10.7552 40.7812 10.5859 40.2474 10.5859 39.5703V33.9844H9.12109C7.27214 33.9844 5.66406 33.6133 4.29688 32.8711C2.92969 32.1289 1.86849 31.0612 1.11328 29.668C0.371094 28.2747 0 26.6016 0 24.6484V9.35547C0 7.40234 0.364583 5.72917 1.09375 4.33594C1.83594 2.94271 2.90365 1.875 4.29688 1.13281C5.6901 0.377604 7.36979 0 9.33594 0H34.9414C36.9206 0 38.6003 0.377604 39.9805 1.13281C41.3737 1.875 42.4349 2.94271 43.1641 4.33594C43.9062 5.72917 44.2773 7.40234 44.2773 9.35547V24.6484C44.2773 26.6016 43.9062 28.2747 43.1641 29.668C42.4349 31.0612 41.3737 32.1289 39.9805 32.8711C38.6003 33.6133 36.9206 33.9844 34.9414 33.9844H22.2852L15.0586 40.4492C14.5508 40.918 14.1081 41.2565 13.7305 41.4648C13.3659 41.6732 12.9688 41.7773 12.5391 41.7773ZM12.1484 14.9219C12.1484 16.1328 12.4935 17.1419 13.1836 17.9492C13.8867 18.7435 14.8177 19.1406 15.9766 19.1406C16.4583 19.1406 16.9076 19.0755 17.3242 18.9453C17.7409 18.8151 18.0859 18.5872 18.3594 18.2617H18.6328C18.4245 18.7826 18.1315 19.2513 17.7539 19.668C17.3763 20.0846 16.9401 20.4427 16.4453 20.7422C15.9505 21.0286 15.4297 21.237 14.8828 21.3672C14.5443 21.4583 14.2969 21.5885 14.1406 21.7578C13.9974 21.9271 13.9258 22.1354 13.9258 22.3828C13.9258 22.6693 14.0299 22.9036 14.2383 23.0859C14.4466 23.2682 14.707 23.3594 15.0195 23.3594C15.5794 23.3594 16.2109 23.1966 16.9141 22.8711C17.6302 22.5326 18.3138 22.0443 18.9648 21.4062C19.6289 20.7552 20.1758 19.9674 20.6055 19.043C21.0352 18.1055 21.25 17.0312 21.25 15.8203C21.25 14.8438 21.0547 13.9648 20.6641 13.1836C20.2865 12.3893 19.7461 11.7643 19.043 11.3086C18.3398 10.8398 17.5195 10.6055 16.582 10.6055C15.306 10.6055 14.2448 11.0091 13.3984 11.8164C12.5651 12.6237 12.1484 13.6589 12.1484 14.9219ZM23.2617 14.9219C23.2617 16.1328 23.6068 17.1419 24.2969 17.9492C25 18.7435 25.931 19.1406 27.0898 19.1406C27.5586 19.1406 28.0013 19.0755 28.418 18.9453C28.8477 18.8151 29.1992 18.5872 29.4727 18.2617H29.7461C29.5508 18.7826 29.2578 19.2513 28.8672 19.668C28.4896 20.0846 28.0534 20.4427 27.5586 20.7422C27.0638 21.0286 26.5365 21.237 25.9766 21.3672C25.638 21.4583 25.3971 21.5885 25.2539 21.7578C25.1237 21.9271 25.0586 22.1354 25.0586 22.3828C25.0586 22.6693 25.1562 22.9036 25.3516 23.0859C25.5599 23.2682 25.8203 23.3594 26.1328 23.3594C26.7057 23.3594 27.3438 23.1966 28.0469 22.8711C28.75 22.5326 29.4271 22.0443 30.0781 21.4062C30.7422 20.7552 31.2891 19.9674 31.7188 19.043C32.1484 18.1055 32.3633 17.0312 32.3633 15.8203C32.3633 14.8438 32.168 13.9648 31.7773 13.1836C31.3997 12.3893 30.8594 11.7643 30.1562 11.3086C29.4531 10.8398 28.6328 10.6055 27.6953 10.6055C26.4193 10.6055 25.3581 11.0091 24.5117 11.8164C23.6784 12.6237 23.2617 13.6589 23.2617 14.9219Z" fill="white"/></svg></div>
+<button class="layout-nav-item" data-slot="today" aria-label="Today"></button>
+<button class="layout-nav-item" data-slot="marketplace" aria-label="Marketplace"></button>
+<button class="layout-nav-item" data-slot="friends" aria-label="Friends"></button>
+<button class="layout-nav-item" data-slot="profile" aria-label="Profile"></button>
+</nav>
 <div id="EnclaveStatus">Booting Hangouts...</div>
 <script>
 const SecurityDatabaseName = "HangoutsSecurity";
@@ -1070,7 +1085,7 @@ function PipelineConnect() {
   }));
 }
 
-const ModulesKnownTypes = ["carousel", "news", "socials", "updates", "legal"];
+const ModulesKnownTypes = ["carousel", "news", "socials", "updates", "legal", "sidebar-icon"];
 const ModulesState = new Map();
 const ModulesByType = new Map();
 
@@ -1129,8 +1144,94 @@ async function ModulesConnectAndSync() {
   try {
     await PipelineConnect();
     await ModulesSyncAll();
+    LayoutRenderAllSidebarIcons();
   } catch {}
 }
+
+const LayoutAllowedSvgElements = new Set([
+  "svg", "path", "g", "circle", "rect", "ellipse", "line", "polyline",
+  "polygon", "defs", "clipPath", "mask", "linearGradient", "radialGradient", "stop"
+]);
+const LayoutAllowedSvgAttrs = new Set([
+  "d", "fill", "fill-rule", "clip-rule", "viewBox", "transform",
+  "cx", "cy", "r", "x", "y", "width", "height", "points",
+  "x1", "y1", "x2", "y2", "offset", "stop-color", "stop-opacity",
+  "id", "class", "xmlns"
+]);
+
+function LayoutStripDisallowedAttrs(LayoutEl) {
+  for (const LayoutAttr of Array.from(LayoutEl.attributes)) {
+    if (!LayoutAllowedSvgAttrs.has(LayoutAttr.name)) {
+      LayoutEl.removeAttribute(LayoutAttr.name);
+    }
+  }
+}
+
+function LayoutCleanSvgNode(LayoutNode) {
+  for (const LayoutChild of Array.from(LayoutNode.children)) {
+    if (!LayoutAllowedSvgElements.has(LayoutChild.tagName)) {
+      LayoutChild.remove();
+      continue;
+    }
+    LayoutStripDisallowedAttrs(LayoutChild);
+    const LayoutFill = LayoutChild.getAttribute("fill");
+    if (LayoutFill && LayoutFill !== "none") {
+      LayoutChild.setAttribute("fill", "currentColor");
+    }
+    LayoutCleanSvgNode(LayoutChild);
+  }
+}
+
+function LayoutSanitizeSvg(LayoutText) {
+  const LayoutParsed = new DOMParser().parseFromString(LayoutText, "image/svg+xml");
+  const LayoutRoot = LayoutParsed.documentElement;
+  if (!LayoutRoot || LayoutRoot.tagName !== "svg" || LayoutRoot.querySelector("parsererror")) {
+    throw new Error("LayoutInvalidSvg");
+  }
+  LayoutStripDisallowedAttrs(LayoutRoot);
+  LayoutRoot.removeAttribute("width");
+  LayoutRoot.removeAttribute("height");
+  LayoutCleanSvgNode(LayoutRoot);
+  return new XMLSerializer().serializeToString(LayoutRoot);
+}
+
+function LayoutApplySidebarIcon(LayoutModule) {
+  const LayoutButton = document.querySelector(`.layout-nav-item[data-slot="${LayoutModule.id}"]`);
+  if (!LayoutButton || !LayoutModule.content || !LayoutModule.content.svgMarkup) {
+    return;
+  }
+  try {
+    const LayoutSafeSvg = LayoutSanitizeSvg(LayoutModule.content.svgMarkup);
+    LayoutButton.innerHTML = "";
+    const LayoutParsedSvg = new DOMParser().parseFromString(LayoutSafeSvg, "image/svg+xml");
+    LayoutButton.appendChild(document.importNode(LayoutParsedSvg.documentElement, true));
+    if (LayoutModule.content.label) {
+      LayoutButton.setAttribute("aria-label", LayoutModule.content.label);
+    }
+  } catch {}
+}
+
+function LayoutRenderAllSidebarIcons() {
+  for (const LayoutModule of ModulesGetAll("sidebar-icon")) {
+    LayoutApplySidebarIcon(LayoutModule);
+  }
+}
+
+function LayoutSetActiveSlot(LayoutSlot) {
+  for (const LayoutButton of document.querySelectorAll(".layout-nav-item")) {
+    LayoutButton.classList.toggle("layout-active", LayoutButton.dataset.slot === LayoutSlot);
+  }
+}
+
+for (const LayoutButton of document.querySelectorAll(".layout-nav-item")) {
+  LayoutButton.addEventListener("click", () => LayoutSetActiveSlot(LayoutButton.dataset.slot));
+}
+
+PipelineOn("message:module:update", (LayoutModule) => {
+  if (LayoutModule.moduleType === "sidebar-icon") {
+    LayoutApplySidebarIcon(LayoutModule);
+  }
+});
 
 const EnclaveRepo = "teamhangouts/Hangouts";
 const EnclaveAssetsRepo = "teamhangouts/Assets";
