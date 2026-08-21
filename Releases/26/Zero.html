@@ -169,8 +169,6 @@ const SecurityIdentityTtlMs = 30 * 60 * 1000;
 const SecurityStageCooldownMs = 5000;
 const SecurityProofOfWorkBits = 18;
 const SecurityCacheKey = "HangoutsPendingIdentity";
-const SecuritySessionCacheKey = "HangoutsSessionProof";
-const SecuritySessionTtlMs = 5 * 60 * 1000;
 
 function SecurityCountLeadingZeroBits(SecurityBuffer) {
   const SecurityBytes = new Uint8Array(SecurityBuffer);
@@ -314,40 +312,6 @@ async function SecurityVerifyCacheEntry(SecurityEntry) {
   );
 }
 
-function SecuritySessionCanonicalPayload(SecurityEntry) {
-  return JSON.stringify({
-    username: SecurityEntry.username,
-    publicKeyHex: SecurityEntry.publicKeyHex,
-    deviceId: SecurityEntry.deviceId,
-    createdAt: SecurityEntry.createdAt,
-    expiresAt: SecurityEntry.expiresAt
-  });
-}
-
-function SecurityWriteSessionCache(SecurityEntry) {
-  localStorage.setItem(SecuritySessionCacheKey, JSON.stringify(SecurityEntry));
-}
-
-async function SecurityStageSession(SecurityUsername, SecurityDeviceId, SecurityPublicKeyHex) {
-  const SecurityIdentifier = SecurityNormalizeIdentifier(SecurityUsername);
-  const SecurityPrivateKey = await SecurityGetPrivateKey(SecurityIdentifier);
-  if (!SecurityPrivateKey) {
-    return null;
-  }
-  const SecurityBaseEntry = {
-    username: SecurityIdentifier,
-    publicKeyHex: SecurityPublicKeyHex,
-    deviceId: SecurityDeviceId,
-    createdAt: Date.now(),
-    expiresAt: Date.now() + SecuritySessionTtlMs
-  };
-  const SecurityChallengeHex = await SecurityDigestPayload(SecuritySessionCanonicalPayload(SecurityBaseEntry));
-  const SecuritySignatureHex = await SecuritySignChallenge(SecurityPrivateKey, SecurityChallengeHex);
-  const SecuritySessionEntry = { ...SecurityBaseEntry, challengeHex: SecurityChallengeHex, signatureHex: SecuritySignatureHex };
-  SecurityWriteSessionCache(SecuritySessionEntry);
-  return SecuritySessionEntry;
-}
-
 async function SecurityEnsurePipelineConnected() {
   if (PipelineGetStatus() === "open") {
     return;
@@ -417,7 +381,6 @@ async function SecurityRequireSessionToken() {
 
 async function SecurityCompleteLogin(SecuritySession) {
   await SecurityPersistSessionToken(SecuritySession.sessionToken);
-  await SecurityStageSession(SecuritySession.username, SecuritySession.deviceId, SecuritySession.publicKeyHex);
   EnclaveAuthorizeAndRun(SecuritySession).catch(() => {});
 }
 
@@ -669,7 +632,6 @@ async function SecurityBootResumeSession() {
   try {
     await SecurityEnsurePipelineConnected();
     const SecurityResponse = await PipelineSendRequest("auth:resume", { sessionToken: SecuritySessionToken });
-    await SecurityStageSession(SecurityResponse.username, SecurityResponse.deviceId, SecurityResponse.publicKeyHex);
     EnclaveAuthorizeAndRun({ ...SecurityResponse, sessionToken: SecuritySessionToken }).catch(() => {});
     return SecurityResponse;
   } catch {
