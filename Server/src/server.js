@@ -28,7 +28,8 @@ import {
   handleChangeEmailVerify,
   handleChangePassword,
   handleChangeBio,
-  handleChangePfp
+  handleChangePfp,
+  handleGetPfp
 } from "./profile.js";
 import { issueSession, resumeSession, revokeSession, requireSession, pruneExpiredSessions } from "./session.js";
 import { pruneExpiredVerifications } from "./verification.js";
@@ -42,7 +43,7 @@ import {
 import { Codes, taggedError } from "./codes.js";
 import { TokenBucket, ConnectionCounter } from "./ratelimit.js";
 
-const DefaultPort = Number(process.env.PORT || 8443);
+const DefaultPort = Number(process.env.PORT || 443);
 
 export async function createHangoutsServer(options = {}) {
   const db = openDatabase(options.dbPath);
@@ -57,17 +58,6 @@ export async function createHangoutsServer(options = {}) {
   const connections = new Set();
 
   const httpServer = createServer((req, res) => {
-    const match = /^\/pfp\/([a-z0-9_.-]{3,32})$/.exec(req.url || "");
-    if (req.method === "GET" && match) {
-      const row = db.prepare("SELECT pfp, pfp_mime FROM identities WHERE username = ?").get(match[1]);
-      if (!row || !row.pfp) {
-        res.writeHead(404).end();
-        return;
-      }
-      res.writeHead(200, { "Content-Type": row.pfp_mime, "Cache-Control": "no-store" });
-      res.end(row.pfp);
-      return;
-    }
     res.writeHead(404).end();
   });
 
@@ -167,6 +157,8 @@ export async function createHangoutsServer(options = {}) {
         return withSession(payload, (record) => handleChangeBio(db, record, payload));
       case "settings:change-pfp":
         return withSession(payload, (record) => handleChangePfp(db, record, payload));
+      case "profile:get-pfp":
+        return handleGetPfp(db, payload);
       case "carousel:get-all":
         return handleCarouselGetAll(db);
       case "carousel:upsert": {

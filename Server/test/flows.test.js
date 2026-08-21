@@ -1,6 +1,5 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import http from "node:http";
 import { createHangoutsServer } from "../src/server.js";
 import { randomHex, bufferToHex, hexToBuffer, subtle } from "../src/codec.js";
 import { onSend } from "../src/mailer.js";
@@ -8,7 +7,6 @@ import { TestPipelineClient, buildRegistrationEntry, deriveCredentialHash } from
 
 let server;
 let url;
-let httpPort;
 let lastCode;
 
 before(async () => {
@@ -19,7 +17,6 @@ before(async () => {
   });
   const address = await server.listen(0);
   url = `ws://127.0.0.1:${address.port}`;
-  httpPort = address.port;
   onSend(({ code }) => {
     lastCode = code;
   });
@@ -192,7 +189,7 @@ test("forgot password: resetting the password revokes other sessions and the new
   }
 });
 
-test("settings: bio and pfp round-trip, pfp is servable over HTTP", async () => {
+test("settings: bio and pfp round-trip entirely over Pipeline", async () => {
   const { client, result } = await signupAndVerify(uniqueUsername(), uniqueEmail(), "settings-password");
 
   await client.sendRequest("settings:change-bio", { sessionToken: result.sessionToken, bio: "hello from the test suite" });
@@ -204,16 +201,12 @@ test("settings: bio and pfp round-trip, pfp is servable over HTTP", async () => 
     mimeType: "image/png"
   });
 
-  const fetched = await new Promise((resolve, reject) => {
-    http.get(`http://127.0.0.1:${httpPort}/pfp/${result.username}`, (res) => {
-      const chunks = [];
-      res.on("data", (chunk) => chunks.push(chunk));
-      res.on("end", () => resolve({ status: res.statusCode, contentType: res.headers["content-type"], body: Buffer.concat(chunks) }));
-    }).on("error", reject);
-  });
-  assert.equal(fetched.status, 200);
-  assert.equal(fetched.contentType, "image/png");
-  assert.deepEqual(fetched.body, imageBytes);
+  const fetched = await client.sendRequest("profile:get-pfp", { username: result.username });
+  assert.equal(fetched.mimeType, "image/png");
+  assert.deepEqual(Buffer.from(fetched.imageBase64, "base64"), imageBytes);
+
+  const missing = await client.sendRequest("profile:get-pfp", { username: uniqueUsername() });
+  assert.equal(missing.imageBase64, null);
 
   client.close();
 });

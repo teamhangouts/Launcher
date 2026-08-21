@@ -645,6 +645,11 @@ async function SecurityChangePfp(SecurityImageBase64, SecurityMimeType) {
   });
 }
 
+async function SecurityGetPfp(SecurityUsername) {
+  await SecurityEnsurePipelineConnected();
+  return PipelineSendRequest("profile:get-pfp", { username: SecurityNormalizeIdentifier(SecurityUsername) });
+}
+
 async function SecurityLogout() {
   const SecuritySessionToken = await SecurityGetPersistedSessionToken();
   if (SecuritySessionToken) {
@@ -678,9 +683,9 @@ const PipelineConnectTimeoutMs = 30000;
 const PipelineRequestTimeoutMs = 15000;
 const PipelineDatabaseName = "HangoutsPipeline";
 const PipelineDatabaseVersion = 1;
-const PipelineEndpointKeyB64 = "Pw7+ewMlr+hzZ/FzB1nwAk+hmj6SziqNjml45vUDwO8=";
-const PipelineEndpointIvB64 = "aoVSfP1AfdNoYFSL";
-const PipelineEndpointCipherB64 = "XWlG42cokpL814KAckAkhCPil9N32X2G9l77CgIOiGO//44DDg==";
+const PipelineEndpointKeyB64 = "O4icoLqbEW84o0YpBPzpG+nkKRGYskPLMfD+/jJ88FM=";
+const PipelineEndpointIvB64 = "wxB9PuO42SNBPiey";
+const PipelineEndpointCipherB64 = "kJf/qZ9VX18OqG9H1wV8rYLgr03dZGqIzkr0It7dzY/J5itv";
 const PipelineExpectedIdentityB64 = "";
 const PipelineBackoffBaseMs = 2000;
 const PipelineBackoffMaxMs = 60000;

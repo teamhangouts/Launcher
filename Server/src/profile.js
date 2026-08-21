@@ -121,3 +121,15 @@ export function handleChangePfp(db, record, rawPayload) {
   db.prepare("UPDATE identities SET pfp = ?, pfp_mime = ? WHERE username = ?").run(bytes, mimeType, record.username);
   return { updated: true };
 }
+
+export function handleGetPfp(db, rawPayload) {
+  if (!rawPayload || typeof rawPayload !== "object") {
+    throw taggedError(Codes.MalformedRequest, "Missing payload.");
+  }
+  const username = assertString(rawPayload.username, "username", { min: 1, max: 64 }).trim().toLowerCase();
+  const row = db.prepare("SELECT pfp, pfp_mime FROM identities WHERE username = ?").get(username);
+  if (!row || !row.pfp) {
+    return { imageBase64: null, mimeType: null };
+  }
+  return { imageBase64: Buffer.from(row.pfp).toString("base64"), mimeType: row.pfp_mime };
+}
