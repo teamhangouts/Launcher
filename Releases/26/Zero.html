@@ -1070,44 +1070,65 @@ function PipelineConnect() {
   }));
 }
 
-let CarouselSlides = [];
-let NewsletterCurrent = null;
+const ModulesKnownTypes = ["carousel", "news", "socials", "updates", "legal"];
+const ModulesState = new Map();
+const ModulesByType = new Map();
 
-function CarouselUpsertLocal(CarouselSlide) {
-  const CarouselIndex = CarouselSlides.findIndex((CarouselExisting) => CarouselExisting.id === CarouselSlide.id);
-  if (CarouselIndex === -1) {
-    CarouselSlides.push(CarouselSlide);
-  } else {
-    CarouselSlides[CarouselIndex] = CarouselSlide;
+function ModulesKey(ModulesType, ModulesId) {
+  return `${ModulesType}:${ModulesId}`;
+}
+
+function ModulesUpsertLocal(ModulesRecord) {
+  ModulesState.set(ModulesKey(ModulesRecord.moduleType, ModulesRecord.id), ModulesRecord);
+  if (!ModulesByType.has(ModulesRecord.moduleType)) {
+    ModulesByType.set(ModulesRecord.moduleType, new Set());
   }
-  CarouselSlides.sort((CarouselA, CarouselB) => CarouselA.order - CarouselB.order);
+  ModulesByType.get(ModulesRecord.moduleType).add(ModulesRecord.id);
 }
 
-function CarouselRemoveLocal(CarouselId) {
-  CarouselSlides = CarouselSlides.filter((CarouselSlide) => CarouselSlide.id !== CarouselId);
+function ModulesRemoveLocal(ModulesType, ModulesId) {
+  ModulesState.delete(ModulesKey(ModulesType, ModulesId));
+  const ModulesIds = ModulesByType.get(ModulesType);
+  if (ModulesIds) {
+    ModulesIds.delete(ModulesId);
+  }
 }
 
-async function CarouselSync() {
-  const CarouselResponse = await PipelineSendRequest("carousel:get-all", {});
-  CarouselSlides = [...CarouselResponse.slides].sort((CarouselA, CarouselB) => CarouselA.order - CarouselB.order);
+function ModulesGetAll(ModulesType) {
+  const ModulesIds = ModulesByType.get(ModulesType);
+  if (!ModulesIds) {
+    return [];
+  }
+  return Array.from(ModulesIds)
+    .map((ModulesId) => ModulesState.get(ModulesKey(ModulesType, ModulesId)))
+    .filter(Boolean)
+    .sort((ModulesA, ModulesB) => ModulesA.order - ModulesB.order || ModulesA.createdAt - ModulesB.createdAt);
 }
 
-async function NewsletterSync() {
-  const NewsletterResponse = await PipelineSendRequest("newsletter:get", {});
-  NewsletterCurrent = NewsletterResponse.newsletter;
+function ModulesGet(ModulesType, ModulesId) {
+  return ModulesState.get(ModulesKey(ModulesType, ModulesId)) || null;
 }
 
-PipelineOn("message:carousel:update", (CarouselSlide) => CarouselUpsertLocal(CarouselSlide));
-PipelineOn("message:carousel:remove", (CarouselRemoval) => CarouselRemoveLocal(CarouselRemoval.id));
-PipelineOn("message:newsletter:update", (NewsletterPayload) => {
-  NewsletterCurrent = NewsletterPayload;
-});
+async function ModulesSyncType(ModulesType) {
+  const ModulesResponse = await PipelineSendRequest("module:get-all", { moduleType: ModulesType });
+  for (const ModulesRecord of ModulesResponse.modules) {
+    ModulesUpsertLocal(ModulesRecord);
+  }
+}
 
-async function ContentConnectAndSync() {
+async function ModulesSyncAll() {
+  for (const ModulesType of ModulesKnownTypes) {
+    await ModulesSyncType(ModulesType);
+  }
+}
+
+PipelineOn("message:module:update", (ModulesRecord) => ModulesUpsertLocal(ModulesRecord));
+PipelineOn("message:module:delete", (ModulesRemoval) => ModulesRemoveLocal(ModulesRemoval.moduleType, ModulesRemoval.id));
+
+async function ModulesConnectAndSync() {
   try {
     await PipelineConnect();
-    await CarouselSync();
-    await NewsletterSync();
+    await ModulesSyncAll();
   } catch {}
 }
 
@@ -1285,7 +1306,7 @@ async function EnclaveRun() {
 }
 
 EnclaveLoadFonts();
-ContentConnectAndSync();
+ModulesConnectAndSync();
 SecurityBootResumeSession().then((SecurityResumedSession) => {
   if (!SecurityResumedSession) {
     EnclaveSetStatus(`${EnclaveErrorUnauthorized}: Sign in to a Hangouts account to continue.`, true);

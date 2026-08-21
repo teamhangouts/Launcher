@@ -14,7 +14,8 @@ export const Codes = {
   ChallengeInvalid: "A5",
   RateLimited: "A6",
   MalformedRequest: "A7",
-  InternalError: "A8"
+  InternalError: "A8",
+  NotFound: "A9"
 };
 
 export function taggedError(code, message, extra) {

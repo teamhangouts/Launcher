@@ -55,23 +55,17 @@ export function openDatabase(path = dbPath) {
       failure_count INTEGER NOT NULL
     );
 
-    CREATE TABLE IF NOT EXISTS carousel_slides (
-      id TEXT PRIMARY KEY,
-      title TEXT NOT NULL,
-      body TEXT NOT NULL,
-      image_url TEXT,
-      link_url TEXT,
-      sort_order INTEGER NOT NULL,
+    CREATE TABLE IF NOT EXISTS modules (
+      module_type TEXT NOT NULL,
+      id TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      content TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (module_type, id)
     );
-
-    CREATE TABLE IF NOT EXISTS newsletter (
-      id INTEGER PRIMARY KEY CHECK (id = 1),
-      title TEXT NOT NULL,
-      body TEXT NOT NULL,
-      published_at INTEGER NOT NULL
-    );
+    CREATE INDEX IF NOT EXISTS idx_modules_type_order ON modules(module_type, sort_order, created_at);
 
     CREATE TABLE IF NOT EXISTS sessions (
       token_hash TEXT PRIMARY KEY,

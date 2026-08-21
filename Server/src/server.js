@@ -34,12 +34,12 @@ import {
 import { issueSession, resumeSession, revokeSession, requireSession, pruneExpiredSessions } from "./session.js";
 import { pruneExpiredVerifications } from "./verification.js";
 import {
-  handleCarouselGetAll,
-  handleCarouselUpsert,
-  handleCarouselDelete,
-  handleNewsletterGet,
-  handleNewsletterUpsert
-} from "./content.js";
+  handleModuleManifest,
+  handleModuleGet,
+  handleModuleGetAll,
+  handleModuleUpsert,
+  handleModuleDelete
+} from "./modules.js";
 import { Codes, taggedError } from "./codes.js";
 import { TokenBucket, ConnectionCounter } from "./ratelimit.js";
 
@@ -159,24 +159,21 @@ export async function createHangoutsServer(options = {}) {
         return withSession(payload, (record) => handleChangePfp(db, record, payload));
       case "profile:get-pfp":
         return handleGetPfp(db, payload);
-      case "carousel:get-all":
-        return handleCarouselGetAll(db);
-      case "carousel:upsert": {
-        const slide = handleCarouselUpsert(db, adminToken, payload);
-        broadcast("carousel:update", slide);
-        return slide;
+      case "module:manifest":
+        return handleModuleManifest(db, payload);
+      case "module:get":
+        return handleModuleGet(db, payload);
+      case "module:get-all":
+        return handleModuleGetAll(db, payload);
+      case "module:upsert": {
+        const mod = handleModuleUpsert(db, adminToken, payload);
+        broadcast("module:update", mod);
+        return mod;
       }
-      case "carousel:delete": {
-        const result = handleCarouselDelete(db, adminToken, payload);
-        broadcast("carousel:remove", result);
+      case "module:delete": {
+        const result = handleModuleDelete(db, adminToken, payload);
+        broadcast("module:delete", result);
         return result;
-      }
-      case "newsletter:get":
-        return handleNewsletterGet(db);
-      case "newsletter:upsert": {
-        const newsletter = handleNewsletterUpsert(db, adminToken, payload);
-        broadcast("newsletter:update", newsletter);
-        return newsletter;
       }
       default:
         throw taggedError(Codes.MalformedRequest, "Unknown request type.");
