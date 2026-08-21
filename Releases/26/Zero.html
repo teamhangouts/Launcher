@@ -14,7 +14,7 @@ body{display:flex;align-items:center;justify-content:center;background:var(--col
 .layout-nav-item{width:40px;height:40px;border:none;border-radius:50%;background:none;color:var(--color-text);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:transform 100ms ease,background-color 100ms ease}
 .layout-nav-item:hover{transform:scale(1.02)}
 .layout-nav-item:active{transform:scale(0.96)}
-.layout-nav-item svg{width:24px;height:24px;display:block}
+.layout-nav-item svg{width:24px;height:24px;display:block;opacity:1;transition:opacity 150ms ease}
 .layout-nav-item.layout-active{background:var(--color-surface-active)}
 #layout-brand-logo{position:absolute;top:26px;left:16px}
 #layout-brand-logo svg{width:32px;height:auto;display:block}
@@ -1085,7 +1085,7 @@ function PipelineConnect() {
   }));
 }
 
-const ModulesKnownTypes = ["carousel", "news", "socials", "updates", "legal", "sidebar-icon"];
+const ModulesKnownTypes = ["carousel", "news", "socials", "updates", "legal", "sidebar-icon", "page"];
 const ModulesState = new Map();
 const ModulesByType = new Map();
 
@@ -1195,6 +1195,22 @@ function LayoutSanitizeSvg(LayoutText) {
   return new XMLSerializer().serializeToString(LayoutRoot);
 }
 
+const LayoutIconFadeMs = 150;
+
+function LayoutSwapSidebarIcon(LayoutButton, LayoutSafeSvg, LayoutModule) {
+  LayoutButton.innerHTML = "";
+  const LayoutParsedSvg = new DOMParser().parseFromString(LayoutSafeSvg, "image/svg+xml");
+  const LayoutNewSvg = document.importNode(LayoutParsedSvg.documentElement, true);
+  LayoutNewSvg.style.opacity = "0";
+  LayoutButton.appendChild(LayoutNewSvg);
+  requestAnimationFrame(() => {
+    LayoutNewSvg.style.opacity = "1";
+  });
+  if (LayoutModule.content.label) {
+    LayoutButton.setAttribute("aria-label", LayoutModule.content.label);
+  }
+}
+
 function LayoutApplySidebarIcon(LayoutModule) {
   const LayoutButton = document.querySelector(`.layout-nav-item[data-slot="${LayoutModule.id}"]`);
   if (!LayoutButton || !LayoutModule.content || !LayoutModule.content.svgMarkup) {
@@ -1202,11 +1218,12 @@ function LayoutApplySidebarIcon(LayoutModule) {
   }
   try {
     const LayoutSafeSvg = LayoutSanitizeSvg(LayoutModule.content.svgMarkup);
-    LayoutButton.innerHTML = "";
-    const LayoutParsedSvg = new DOMParser().parseFromString(LayoutSafeSvg, "image/svg+xml");
-    LayoutButton.appendChild(document.importNode(LayoutParsedSvg.documentElement, true));
-    if (LayoutModule.content.label) {
-      LayoutButton.setAttribute("aria-label", LayoutModule.content.label);
+    const LayoutExistingSvg = LayoutButton.querySelector("svg");
+    if (LayoutExistingSvg) {
+      LayoutExistingSvg.style.opacity = "0";
+      setTimeout(() => LayoutSwapSidebarIcon(LayoutButton, LayoutSafeSvg, LayoutModule), LayoutIconFadeMs);
+    } else {
+      LayoutSwapSidebarIcon(LayoutButton, LayoutSafeSvg, LayoutModule);
     }
   } catch {}
 }
